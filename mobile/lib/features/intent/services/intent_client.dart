@@ -63,62 +63,65 @@ class IntentClient {
     required String imageBase64,
     double? sensorDistanceCm,
   }) async {
-    try {
-      final url = Uri.parse('$baseUrl/api/v1/analyze');
-      final response = await http
-          .post(
-            url,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'transcript': transcript,
-              'image_base64': imageBase64,
-              'sensor_distance_cm': sensorDistanceCm,
-            }),
-          )
-          .timeout(const Duration(seconds: 12));
+    final hosts = [baseUrl, if (baseUrl != AppConstants.wifiBackendUrl) AppConstants.wifiBackendUrl];
+    for (final host in hosts) {
+      try {
+        final url = Uri.parse('$host/api/v1/analyze');
+        final response = await http
+            .post(
+              url,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({
+                'transcript': transcript,
+                'image_base64': imageBase64,
+                'sensor_distance_cm': sensorDistanceCm,
+              }),
+            )
+            .timeout(const Duration(seconds: 8));
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final target = data['target'] as String? ?? 'object';
-        final detected = data['detected'] as bool? ?? false;
-        final pos = data['image_position'] as String? ?? 'none';
-        final voiceMsg = data['voice_message'] as String? ?? '';
-        final hapticStr = data['haptic_command'] as String? ?? 'STOP';
-        final proximity = data['proximity'] as String? ?? 'unknown';
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as Map<String, dynamic>;
+          final target = data['target'] as String? ?? 'object';
+          final detected = data['detected'] as bool? ?? false;
+          final pos = data['image_position'] as String? ?? 'none';
+          final voiceMsg = data['voice_message'] as String? ?? '';
+          final hapticStr = data['haptic_command'] as String? ?? 'STOP';
+          final proximity = data['proximity'] as String? ?? 'unknown';
 
-        Direction direction;
-        if (pos == 'left') {
-          direction = Direction.left;
-        } else if (pos == 'right') {
-          direction = Direction.right;
-        } else if (pos == 'center') {
-          direction = Direction.center;
-        } else if (!detected) {
-          direction = Direction.none;
-        } else {
-          direction = Direction.near;
-        }
-
-        HapticCommand haptic = HapticCommand.stop;
-        for (final h in HapticCommand.values) {
-          if (h.textValue == hapticStr) {
-            haptic = h;
-            break;
+          Direction direction;
+          if (pos == 'left') {
+            direction = Direction.left;
+          } else if (pos == 'right') {
+            direction = Direction.right;
+          } else if (pos == 'center') {
+            direction = Direction.center;
+          } else if (!detected) {
+            direction = Direction.none;
+          } else {
+            direction = Direction.near;
           }
-        }
 
-        return GuidanceOutput(
-          target: target,
-          detected: detected,
-          direction: direction,
-          imagePosition: pos,
-          voiceMessage: voiceMsg,
-          hapticCommand: haptic,
-          proximity: proximity,
-        );
+          HapticCommand haptic = HapticCommand.stop;
+          for (final h in HapticCommand.values) {
+            if (h.textValue == hapticStr) {
+              haptic = h;
+              break;
+            }
+          }
+
+          return GuidanceOutput(
+            target: target,
+            detected: detected,
+            direction: direction,
+            imagePosition: pos,
+            voiceMessage: voiceMsg,
+            hapticCommand: haptic,
+            proximity: proximity,
+          );
+        }
+      } catch (e) {
+        debugPrint('Vision API call error on $host: $e');
       }
-    } catch (e) {
-      debugPrint('Claude Vision API call error: $e');
     }
     return null;
   }

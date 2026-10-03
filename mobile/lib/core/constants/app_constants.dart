@@ -8,8 +8,9 @@ class AppConstants {
   static const Duration speechDebounceDuration = Duration(milliseconds: 2200);
   static const Duration hapticCooldown = Duration(milliseconds: 600);
 
-  // Backend URL: Points to host machine IP on local WiFi for physical Android phone
-  static const String defaultBackendUrl = 'http://10.68.37.235:8000';
+  // Backend URL: Uses 127.0.0.1 via adb reverse for zero-latency, firewall-free connection
+  static const String defaultBackendUrl = 'http://127.0.0.1:8000';
+  static const String wifiBackendUrl = 'http://10.68.37.235:8000';
 
   // BLE UUIDs matching firmware/esp32_wristband.ino
   static const String bleDeviceName = 'SENSE-Wristband';
