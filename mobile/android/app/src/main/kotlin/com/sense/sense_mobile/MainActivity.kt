@@ -1,4 +1,4 @@
-package com.sense.assistive.mobile
+package com.sense.sense_mobile
 
 import io.flutter.embedding.android.FlutterActivity
 

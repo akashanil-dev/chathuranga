@@ -1,4 +1,4 @@
-# mobile
+# sense_mobile
 
 A new Flutter project.
 
