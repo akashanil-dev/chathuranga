@@ -120,10 +120,25 @@ void main() {
       expect(intent.target, 'keys');
     });
 
+    test('Extracts water bottle from "find my water bottle"', () async {
+      final target = IntentClient.cleanTargetPhrase('find my water bottle');
+      expect(target, 'water bottle');
+    });
+
     test('Extracts water bottle from "Where is my water bottle?"', () async {
       final intent = await client.parseIntent('Where is my water bottle?');
       expect(intent.action, 'FIND_OBJECT');
       expect(intent.target, 'water bottle');
+    });
+
+    test('Extracts keys from "can you help me find my keys please"', () async {
+      final target = IntentClient.cleanTargetPhrase('can you help me find my keys please');
+      expect(target, 'keys');
+    });
+
+    test('Extracts water bottle from "hey sense find my water bottle"', () async {
+      final target = IntentClient.cleanTargetPhrase('hey sense find my water bottle');
+      expect(target, 'water bottle');
     });
 
     test('Extracts STOP action from "Stop"', () async {

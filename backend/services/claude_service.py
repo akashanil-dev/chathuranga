@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import logging
 from typing import Optional
@@ -25,26 +26,38 @@ class ClaudeService:
 
     @staticmethod
     def extract_target_fast(transcript: str) -> Optional[str]:
-        clean_text = transcript.strip().lower()
-        prefixes = [
-            "can you help me find my ", "can you help me find the ", "can you help me find a ", "can you help me find ",
-            "help me find my ", "help me find the ", "help me find a ", "help me find ",
-            "please find my ", "please find the ", "please find a ", "please find ",
-            "find my ", "find the ", "find a ", "find ",
-            "where are my ", "where is my ", "where's my ", "where did i leave my ", "where are the ", "where is the ",
-            "look for my ", "look for the ", "look for ",
-            "locate my ", "locate the ", "locate "
+        if not transcript or not transcript.strip():
+            return None
+        clean = transcript.strip().lower()
+        clean = re.sub(r'[\.\?\!\,\;]+$', '', clean).strip()
+
+        # Repeatedly strip leading conversational prefixes, fillers, and command verbs
+        prefix_patterns = [
+            r'^(?:hey\s+|ok\s+)?sense\s+',
+            r'^(?:hello|hi|please|um|uh)\s+',
+            r'^(?:can\s+you|could\s+you|would\s+you)\s+(?:please\s+)?',
+            r'^(?:i\s+want\s+to|i\s+need\s+to|i\s+would\s+like\s+to|i\'m\s+trying\s+to|im\s+trying\s+to)\s+',
+            r'^(?:i\s+am\s+looking\s+for|i\'m\s+looking\s+for|im\s+looking\s+for|looking\s+for)\s+',
+            r'^(?:help\s+me|help\s+me\s+to)\s+',
+            r'^(?:find|locate|search\s+for|look\s+for|detect|track|spot|see|show\s+me)\s+(?:me\s+)?',
+            r'^(?:where\s+is|where\s+are|where\'s|wheres|where\s+did\s+i\s+leave|where\s+did\s+i\s+put)\s+',
+            r'^(?:my|the|a|an|some)\s+',
         ]
-        for p in prefixes:
-            if clean_text.startswith(p):
-                target = clean_text[len(p):].rstrip(".?! ").strip()
-                suffixes = [" please", " for me", " thanks", " thank you"]
-                for s in suffixes:
-                    if target.endswith(s):
-                        target = target[:-len(s)].rstrip(".?! ").strip()
-                if target:
-                    return target
-        return None
+
+        changed = True
+        while changed:
+            changed = False
+            for p in prefix_patterns:
+                m = re.match(p, clean)
+                if m:
+                    clean = clean[m.end():].strip()
+                    changed = True
+
+        # Strip trailing polite suffixes
+        clean = re.sub(r'\s+(?:please|for\s+me|thanks|thank\s+you|now)$', '', clean).strip()
+        clean = re.sub(r'^(?:my|the|a|an)\s+', '', clean).strip()
+
+        return clean if clean else None
 
     async def parse_intent(self, transcript: str) -> VoiceIntentResponse:
         """Parses user speech into structured intent using fast rules or Claude Haiku."""
@@ -199,6 +212,7 @@ Do not include markdown fences or any other text."""
         self,
         transcript: str,
         image_base64: str,
+        target: Optional[str] = None,
         sensor_distance_cm: Optional[float] = None
     ) -> GuidanceResponse:
         """
@@ -206,7 +220,7 @@ Do not include markdown fences or any other text."""
         Accepts user voice question + phone camera photo and generates
         contextual spoken guidance and directional haptic commands in ~1.5 seconds.
         """
-        target = self.extract_target_fast(transcript) or "object"
+        clean_target = (target and target.strip()) or self.extract_target_fast(transcript) or "object"
 
         if self.client:
             try:
@@ -221,22 +235,23 @@ Do not include markdown fences or any other text."""
                 elif clean_b64.startswith("iVBOR"):
                     media_type = "image/png"
                 system_prompt = (
-                    "You are SENSE, an AI assistant for a visually impaired user holding a phone camera. "
-                    "Examine the image carefully to find the object requested in the user's speech.\n"
-                    "1. If found, determine its horizontal position: 'left' (left third of image), 'center' (middle third), or 'right' (right third).\n"
-                    "2. Determine haptic command: 'LEFT', 'RIGHT', 'CENTER', 'NEAR', or 'STOP'. If the object appears close or large, use 'NEAR'.\n"
-                    "3. Provide a clear, natural spoken guidance message in under 2 concise sentences (e.g. 'I see your keys to your right, next to the keyboard.').\n"
-                    "4. If the object is not visible, set detected=false, image_position='none', haptic_command='STOP', and advise the user to pan slowly.\n"
-                    "Return ONLY a valid JSON object matching this schema:\n"
-                    "{\n"
-                    '  "target": "<object name>",\n'
-                    '  "detected": <true/false>,\n'
-                    '  "image_position": "<left/center/right/none>",\n'
-                    '  "voice_message": "<spoken guidance>",\n'
-                    '  "haptic_command": "<LEFT/RIGHT/CENTER/NEAR/STOP>",\n'
-                    '  "proximity": "<close/medium/far/unknown>"\n'
-                    "}\n"
-                    "No markdown fences, no other text."
+                    f"You are SENSE, an AI assistant for a visually impaired user holding a phone camera. "
+                    f"The user is searching for: '{clean_target}'. "
+                    f"Examine the image carefully to find the '{clean_target}'.\n"
+                    f"1. If found, determine its horizontal position: 'left' (left third of image), 'center' (middle third), or 'right' (right third).\n"
+                    f"2. Determine haptic command: 'LEFT', 'RIGHT', 'CENTER', 'NEAR', or 'STOP'. If the object appears close or large, use 'NEAR'.\n"
+                    f"3. Provide a clear, natural spoken guidance message in under 2 concise sentences (e.g. 'I see your {clean_target} to your right, next to the keyboard.').\n"
+                    f"4. If the '{clean_target}' is not visible, set detected=false, image_position='none', haptic_command='STOP', and advise the user to pan slowly.\n"
+                    f"Return ONLY a valid JSON object matching this schema:\n"
+                    f"{{\n"
+                    f'  "target": "{clean_target}",\n'
+                    f'  "detected": <true/false>,\n'
+                    f'  "image_position": "<left/center/right/none>",\n'
+                    f'  "voice_message": "<spoken guidance>",\n'
+                    f'  "haptic_command": "<LEFT/RIGHT/CENTER/NEAR/TOUCHING/STOP>",\n'
+                    f'  "proximity": "<close/medium/far/unknown>"\n'
+                    f"}}\n"
+                    f"No markdown fences, no other text."
                 )
 
                 response = self.client.messages.create(
@@ -257,7 +272,7 @@ Do not include markdown fences or any other text."""
                                 },
                                 {
                                     "type": "text",
-                                    "text": f"User question: '{transcript}'",
+                                    "text": f"User question: '{transcript}'. Target to find: '{clean_target}'",
                                 },
                             ],
                         }
@@ -272,14 +287,18 @@ Do not include markdown fences or any other text."""
                     data["detected"] = data["detected"].lower() == "true"
                 if not data.get("image_position"):
                     data["image_position"] = "none" if not data.get("detected") else "center"
-                if not data.get("target"):
-                    data["target"] = target
+                data["target"] = clean_target
                 if not data.get("voice_message"):
                     data["voice_message"] = f"Looking for your {target}."
-                if not data.get("haptic_command"):
-                    data["haptic_command"] = "STOP" if not data.get("detected") else "CENTER"
                 if not data.get("proximity"):
                     data["proximity"] = "unknown"
+                if sensor_distance_cm is not None and data.get("detected", False):
+                    data["proximity"] = f"{sensor_distance_cm:.1f} cm"
+                    if sensor_distance_cm <= 8.0:
+                        data["haptic_command"] = "TOUCHING"
+                        data["voice_message"] = f"Target reached! Your {target} is right under your hand."
+                    elif sensor_distance_cm <= 25.0:
+                        data["haptic_command"] = "NEAR"
                 return GuidanceResponse(**data)
             except Exception as e:
                 logger.error(f"Claude Vision API call error: {e}")

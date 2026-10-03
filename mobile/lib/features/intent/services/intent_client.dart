@@ -58,11 +58,51 @@ class IntentClient {
     return _fallbackParse(clean);
   }
 
+  static String cleanTargetPhrase(String text) {
+    if (text.trim().isEmpty) return '';
+    String clean = text.toLowerCase().trim();
+    clean = clean.replaceAll(RegExp(r'[\.\?\!\,\;]+$'), '').trim();
+
+    final prefixPatterns = [
+      RegExp(r'^(?:hey\s+|ok\s+)?sense\s+'),
+      RegExp(r'^(?:hello|hi|please|um|uh)\s+'),
+      RegExp(r'^(?:can\s+you|could\s+you|would\s+you)\s+(?:please\s+)?'),
+      RegExp(r"^(?:i\s+want\s+to|i\s+need\s+to|i\s+would\s+like\s+to|i['\s]?m\s+trying\s+to)\s+"),
+      RegExp(r"^(?:i\s+am\s+looking\s+for|i['\s]?m\s+looking\s+for|looking\s+for)\s+"),
+      RegExp(r'^(?:help\s+me|help\s+me\s+to)\s+'),
+      RegExp(r'^(?:find|locate|search\s+for|look\s+for|detect|track|spot|see|show\s+me)\s+(?:me\s+)?'),
+      RegExp(r"^(?:where\s+is|where\s+are|where['\s]?s|wheres|where\s+did\s+i\s+leave|where\s+did\s+i\s+put)\s+"),
+      RegExp(r'^(?:my|the|a|an|some)\s+'),
+    ];
+
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (final p in prefixPatterns) {
+        final match = p.firstMatch(clean);
+        if (match != null) {
+          clean = clean.substring(match.end).trim();
+          changed = true;
+        }
+      }
+    }
+
+    clean = clean.replaceAll(RegExp(r'\s+(?:please|for\s+me|thanks|thank\s+you|now)$'), '').trim();
+    clean = clean.replaceAll(RegExp(r'^(?:my|the|a|an)\s+'), '').trim();
+
+    return clean;
+  }
+
   Future<GuidanceOutput?> analyzeSceneWithVision({
     required String transcript,
+    String? target,
     required String imageBase64,
     double? sensorDistanceCm,
   }) async {
+    final cleanTarget = (target != null && target.trim().isNotEmpty)
+        ? cleanTargetPhrase(target)
+        : cleanTargetPhrase(transcript);
+
     final hosts = [baseUrl, if (baseUrl != AppConstants.wifiBackendUrl) AppConstants.wifiBackendUrl];
     for (final host in hosts) {
       try {
@@ -73,6 +113,7 @@ class IntentClient {
               headers: {'Content-Type': 'application/json'},
               body: jsonEncode({
                 'transcript': transcript,
+                'target': cleanTarget,
                 'image_base64': imageBase64,
                 'sensor_distance_cm': sensorDistanceCm,
               }),
@@ -81,7 +122,11 @@ class IntentClient {
 
         if (response.statusCode == 200) {
           final data = jsonDecode(response.body) as Map<String, dynamic>;
-          final target = data['target'] as String? ?? 'object';
+          final rawTarget = data['target'] as String? ?? '';
+          final resolvedTarget = cleanTarget.isNotEmpty
+              ? cleanTarget
+              : (rawTarget.isNotEmpty ? cleanTargetPhrase(rawTarget) : 'object');
+
           final detected = data['detected'] as bool? ?? false;
           final pos = data['image_position'] as String? ?? 'none';
           final voiceMsg = data['voice_message'] as String? ?? '';
@@ -110,7 +155,7 @@ class IntentClient {
           }
 
           return GuidanceOutput(
-            target: target,
+            target: resolvedTarget,
             detected: detected,
             direction: direction,
             imagePosition: pos,
@@ -127,7 +172,7 @@ class IntentClient {
   }
 
   UserIntent _fallbackParse(String text) {
-    final lower = text.toLowerCase();
+    final lower = text.toLowerCase().trim();
 
     if (lower.contains('stop') || lower.contains('cancel') || lower.contains('quit')) {
       return UserIntent(action: 'STOP', target: null, rawTranscript: text);
@@ -137,46 +182,7 @@ class IntentClient {
       return UserIntent(action: 'HELP', target: null, rawTranscript: text);
     }
 
-    final prefixes = [
-      'can you help me find my ',
-      'can you help me find the ',
-      'can you help me find a ',
-      'can you help me find ',
-      'help me find my ',
-      'help me find the ',
-      'help me find a ',
-      'help me find ',
-      'please find my ',
-      'please find the ',
-      'please find a ',
-      'please find ',
-      'find my ',
-      'find the ',
-      'find a ',
-      'find ',
-      'where are my ',
-      'where is my ',
-      'where\'s my ',
-      'where did i leave my ',
-      'where are the ',
-      'where is the ',
-      'look for my ',
-      'look for the ',
-      'look for ',
-      'locate my ',
-      'locate the ',
-      'locate ',
-    ];
-
-    String target = lower;
-    for (final p in prefixes) {
-      if (target.startsWith(p)) {
-        target = target.substring(p.length).trim();
-        break;
-      }
-    }
-
-    target = target.replaceAll(RegExp(r'[\.\?!]'), '').trim();
+    final target = cleanTargetPhrase(text);
 
     return UserIntent(
       action: 'FIND_OBJECT',

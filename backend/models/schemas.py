@@ -19,6 +19,7 @@ class BoundingBox(BaseModel):
 
 class VisionAnalysisRequest(BaseModel):
     transcript: str = Field(..., description="User's spoken request, e.g. 'Where are my keys?'")
+    target: Optional[str] = Field(None, description="Pre-extracted target object name, e.g. 'water bottle'")
     image_base64: str = Field(..., description="Base64 encoded JPEG image captured by the camera")
     sensor_distance_cm: Optional[float] = None
 
@@ -33,5 +34,5 @@ class GuidanceResponse(BaseModel):
     detected: bool
     image_position: Literal["left", "center", "right", "none", "unknown"]
     voice_message: str
-    haptic_command: Literal["LEFT", "RIGHT", "CENTER", "NEAR", "STOP"]
+    haptic_command: Literal["LEFT", "RIGHT", "CENTER", "NEAR", "TOUCHING", "STOP"]
     proximity: str = "unknown"

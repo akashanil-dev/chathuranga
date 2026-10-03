@@ -143,29 +143,7 @@ class FindSessionController extends ChangeNotifier {
   }
 
   String _extractTargetFast(String transcript) {
-    final lower = transcript.toLowerCase().trim();
-    final prefixes = [
-      'can you help me find my ', 'can you help me find the ', 'can you help me find a ', 'can you help me find ',
-      'help me find my ', 'help me find the ', 'help me find a ', 'help me find ',
-      'please find my ', 'please find the ', 'please find a ', 'please find ',
-      'find my ', 'find the ', 'find a ', 'find ',
-      'where are my ', 'where is my ', "where's my ", 'where are the ', 'where is the ',
-      'look for my ', 'look for the ', 'look for ',
-      'locate my ', 'locate the ', 'locate ',
-    ];
-    for (final p in prefixes) {
-      if (lower.startsWith(p)) {
-        String target = lower.substring(p.length).trim();
-        final suffixes = [' please', ' for me', ' thanks', ' thank you'];
-        for (final s in suffixes) {
-          if (target.endsWith(s)) {
-            target = target.substring(0, target.length - s.length).trim();
-          }
-        }
-        return target.replaceAll(RegExp(r'[\.\?\!]+$'), '').trim();
-      }
-    }
-    return '';
+    return IntentClient.cleanTargetPhrase(transcript);
   }
 
   Timer? _scanningTimer;
@@ -192,7 +170,7 @@ class FindSessionController extends ChangeNotifier {
     String target = _extractTargetFast(transcript);
     if (target.isEmpty) {
       final intent = await intentClient.parseIntent(transcript);
-      target = intent.target?.trim() ?? '';
+      target = IntentClient.cleanTargetPhrase(intent.target ?? '');
     }
 
     if (target.isEmpty) {
@@ -241,6 +219,7 @@ class FindSessionController extends ChangeNotifier {
       if (snapshotBase64 != null && _state == FindSessionState.searching) {
         final visionGuidance = await intentClient.analyzeSceneWithVision(
           transcript: originalTranscript,
+          target: _targetObject,
           imageBase64: snapshotBase64,
           sensorDistanceCm: _latestSensorDistance,
         );
@@ -248,7 +227,9 @@ class FindSessionController extends ChangeNotifier {
         if (visionGuidance != null && visionGuidance.detected && _state == FindSessionState.searching) {
           _scanningTimer?.cancel();
           _state = FindSessionState.guiding;
-          _targetObject = visionGuidance.target;
+          if (_targetObject.isEmpty && visionGuidance.target.isNotEmpty) {
+            _targetObject = IntentClient.cleanTargetPhrase(visionGuidance.target);
+          }
           _currentGuidance = visionGuidance;
           _lastDetectionTime = DateTime.now();
           notifyListeners();
