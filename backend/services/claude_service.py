@@ -13,29 +13,63 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 class ClaudeService:
     def __init__(self):
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
         self.client = None
         if self.api_key:
             try:
                 import anthropic
                 self.client = anthropic.Anthropic(api_key=self.api_key)
+                logger.info(f"Initialized Anthropic client with model: {self.model}")
             except Exception as e:
                 logger.warning(f"Failed to initialize Anthropic client: {e}")
 
+    @staticmethod
+    def extract_target_fast(transcript: str) -> Optional[str]:
+        clean_text = transcript.strip().lower()
+        prefixes = [
+            "can you help me find my ", "can you help me find the ", "can you help me find a ", "can you help me find ",
+            "help me find my ", "help me find the ", "help me find a ", "help me find ",
+            "please find my ", "please find the ", "please find a ", "please find ",
+            "find my ", "find the ", "find a ", "find ",
+            "where are my ", "where is my ", "where's my ", "where did i leave my ", "where are the ", "where is the ",
+            "look for my ", "look for the ", "look for ",
+            "locate my ", "locate the ", "locate "
+        ]
+        for p in prefixes:
+            if clean_text.startswith(p):
+                target = clean_text[len(p):].rstrip(".?! ").strip()
+                suffixes = [" please", " for me", " thanks", " thank you"]
+                for s in suffixes:
+                    if target.endswith(s):
+                        target = target[:-len(s)].rstrip(".?! ").strip()
+                if target:
+                    return target
+        return None
+
     async def parse_intent(self, transcript: str) -> VoiceIntentResponse:
-        """Parses user speech into structured intent using Claude or fallback heuristic."""
+        """Parses user speech into structured intent using fast rules or Claude Haiku."""
         clean_text = transcript.strip().lower()
         if not clean_text:
             return VoiceIntentResponse(action="UNKNOWN", target=None, raw_transcript=transcript)
 
-        # Check for stop / cancel
+        # Check for stop / cancel (0ms)
         if any(w in clean_text for w in ["stop", "cancel", "quit", "abort", "nevermind"]):
             return VoiceIntentResponse(action="STOP", target=None, raw_transcript=transcript)
 
-        # Check for help (only if not asking to help find something)
+        # Check for help (0ms)
         if any(w in clean_text for w in ["what can you do", "instructions", "how do i use", "how does this work"]) or (clean_text in ["help", "help me"]):
             return VoiceIntentResponse(action="HELP", target=None, raw_transcript=transcript)
 
-        # Try Claude if available
+        # Fast heuristic extraction (0ms latency for common phrases like "find my keys")
+        fast_target = self.extract_target_fast(transcript)
+        if fast_target:
+            return VoiceIntentResponse(
+                action="FIND_OBJECT",
+                target=fast_target,
+                raw_transcript=transcript
+            )
+
+        # Try fast Claude Haiku if available for complex or ambiguous sentences
         if self.client:
             try:
                 prompt = f"""You are SENSE, an AI intent extractor for a visually impaired user's assistive device.
@@ -50,12 +84,12 @@ Return ONLY a valid JSON object with the following schema:
 Do not include markdown fences or any other text."""
                 
                 response = self.client.messages.create(
-                    model="claude-opus-5-5",
-                    max_tokens=300,
+                    model=self.model,
+                    max_tokens=100,
                     messages=[{"role": "user", "content": prompt}]
                 )
                 text_block = next((b for b in response.content if getattr(b, "type", None) == "text"), None)
-                content = text_block.text.strip() if text_block else "{}"
+                content = text_block.text.strip() if text_block and hasattr(text_block, "text") else "{}"
                 if content.startswith("```"):
                     content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
                 data = json.loads(content)
@@ -65,28 +99,11 @@ Do not include markdown fences or any other text."""
                     raw_transcript=transcript
                 )
             except Exception as e:
-                logger.error(f"Claude API call failed: {e}. Falling back to rule-based parser.")
+                logger.error(f"Claude API call failed: {e}. Falling back to default target.")
 
-        # Fallback heuristic
-        target = clean_text
-        prefixes = [
-            "can you help me find my ", "can you help me find the ", "can you help me find a ", "can you help me find ",
-            "help me find my ", "help me find the ", "help me find a ", "help me find ",
-            "please find my ", "please find the ", "please find a ", "please find ",
-            "find my ", "find the ", "find a ", "find ",
-            "where are my ", "where is my ", "where's my ", "where did i leave my ", "where are the ", "where is the ",
-            "look for my ", "look for the ", "look for ",
-            "locate my ", "locate the ", "locate "
-        ]
-        for p in prefixes:
-            if target.startswith(p):
-                target = target[len(p):].strip()
-                break
-        
-        target = target.rstrip(".?! ")
         return VoiceIntentResponse(
             action="FIND_OBJECT",
-            target=target if target else "object",
+            target=clean_text.rstrip(".?! "),
             raw_transcript=transcript
         )
 
@@ -185,12 +202,11 @@ Do not include markdown fences or any other text."""
         sensor_distance_cm: Optional[float] = None
     ) -> GuidanceResponse:
         """
-        Multimodal scene understanding using Claude 3.5 Vision.
+        Multimodal scene understanding using fast Claude Vision (Haiku).
         Accepts user voice question + phone camera photo and generates
-        contextual spoken guidance and directional haptic commands.
+        contextual spoken guidance and directional haptic commands in ~1.5 seconds.
         """
-        intent = await self.parse_intent(transcript)
-        target = intent.target or "object"
+        target = self.extract_target_fast(transcript) or "object"
 
         if self.client:
             try:
@@ -205,8 +221,7 @@ Do not include markdown fences or any other text."""
                 elif clean_b64.startswith("iVBOR"):
                     media_type = "image/png"
                 system_prompt = (
-                    "You are SENSE, an AI assistant for a visually impaired user. "
-                    "The user is holding a phone camera facing their surroundings. "
+                    "You are SENSE, an AI assistant for a visually impaired user holding a phone camera. "
                     "Examine the image carefully to find the object requested in the user's speech.\n"
                     "1. If found, determine its horizontal position: 'left' (left third of image), 'center' (middle third), or 'right' (right third).\n"
                     "2. Determine haptic command: 'LEFT', 'RIGHT', 'CENTER', 'NEAR', or 'STOP'. If the object appears close or large, use 'NEAR'.\n"
@@ -225,8 +240,8 @@ Do not include markdown fences or any other text."""
                 )
 
                 response = self.client.messages.create(
-                    model="claude-opus-5-5",
-                    max_tokens=400,
+                    model=self.model,
+                    max_tokens=250,
                     system=system_prompt,
                     messages=[
                         {
@@ -249,10 +264,22 @@ Do not include markdown fences or any other text."""
                     ],
                 )
                 text_block = next((b for b in response.content if getattr(b, "type", None) == "text"), None)
-                content = text_block.text.strip() if text_block else "{}"
+                content = text_block.text.strip() if text_block and hasattr(text_block, "text") else "{}"
                 if content.startswith("```"):
                     content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
                 data = json.loads(content)
+                if "detected" in data and isinstance(data["detected"], str):
+                    data["detected"] = data["detected"].lower() == "true"
+                if not data.get("image_position"):
+                    data["image_position"] = "none" if not data.get("detected") else "center"
+                if not data.get("target"):
+                    data["target"] = target
+                if not data.get("voice_message"):
+                    data["voice_message"] = f"Looking for your {target}."
+                if not data.get("haptic_command"):
+                    data["haptic_command"] = "STOP" if not data.get("detected") else "CENTER"
+                if not data.get("proximity"):
+                    data["proximity"] = "unknown"
                 return GuidanceResponse(**data)
             except Exception as e:
                 logger.error(f"Claude Vision API call error: {e}")
@@ -260,9 +287,9 @@ Do not include markdown fences or any other text."""
         # Fallback guidance when offline or invalid API key
         return GuidanceResponse(
             target=target,
-            detected=True,
-            image_position="center",
-            voice_message=f"I am searching for your {target}. Point the camera straight ahead.",
-            haptic_command="CENTER",
+            detected=False,
+            image_position="none",
+            voice_message=f"I don't see the {target} yet. Please point your camera around slowly.",
+            haptic_command="STOP",
             proximity="unknown"
         )
