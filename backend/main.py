@@ -5,7 +5,8 @@ from models.schemas import (
     VoiceIntentRequest,
     VoiceIntentResponse,
     GuidanceRequest,
-    GuidanceResponse
+    GuidanceResponse,
+    VisionAnalysisRequest
 )
 from services.claude_service import ClaudeService
 
@@ -53,21 +54,30 @@ async def parse_voice_intent(req: VoiceIntentRequest):
 @app.post("/api/v1/guidance", response_model=GuidanceResponse)
 async def generate_guidance(req: GuidanceRequest):
     """
-    Computes guidance response matching SENSE specification:
-    {
-      "target": "keys",
-      "detected": true,
-      "image_position": "right",
-      "voice_message": "The keys appear to your right.",
-      "haptic_command": "RIGHT",
-      "proximity": "unknown"
-    }
+    Computes guidance response matching SENSE specification.
     """
     try:
         response = claude_service.calculate_guidance(req)
         return response
     except Exception as e:
         logger.error(f"Error generating guidance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/analyze", response_model=GuidanceResponse)
+async def analyze_camera_and_voice(req: VisionAnalysisRequest):
+    """
+    Multimodal scene analysis with Claude Vision.
+    Processes user voice command + camera image, returns structured guidance.
+    """
+    try:
+        response = await claude_service.analyze_multimodal_vision(
+            transcript=req.transcript,
+            image_base64=req.image_base64,
+            sensor_distance_cm=req.sensor_distance_cm
+        )
+        return response
+    except Exception as e:
+        logger.error(f"Error analyzing vision: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

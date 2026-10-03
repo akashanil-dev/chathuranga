@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../../../core/constants/app_constants.dart';
+import '../../../core/types/direction.dart';
+import '../../guidance/models/guidance_output.dart';
 
 class UserIntent {
   final String action; // FIND_OBJECT, STOP, HELP, UNKNOWN
@@ -54,6 +56,71 @@ class IntentClient {
 
     // Offline / Fallback heuristic parser
     return _fallbackParse(clean);
+  }
+
+  Future<GuidanceOutput?> analyzeSceneWithVision({
+    required String transcript,
+    required String imageBase64,
+    double? sensorDistanceCm,
+  }) async {
+    try {
+      final url = Uri.parse('$baseUrl/api/v1/analyze');
+      final response = await http
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'transcript': transcript,
+              'image_base64': imageBase64,
+              'sensor_distance_cm': sensorDistanceCm,
+            }),
+          )
+          .timeout(const Duration(seconds: 12));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final target = data['target'] as String? ?? 'object';
+        final detected = data['detected'] as bool? ?? false;
+        final pos = data['image_position'] as String? ?? 'none';
+        final voiceMsg = data['voice_message'] as String? ?? '';
+        final hapticStr = data['haptic_command'] as String? ?? 'STOP';
+        final proximity = data['proximity'] as String? ?? 'unknown';
+
+        Direction direction;
+        if (pos == 'left') {
+          direction = Direction.left;
+        } else if (pos == 'right') {
+          direction = Direction.right;
+        } else if (pos == 'center') {
+          direction = Direction.center;
+        } else if (!detected) {
+          direction = Direction.none;
+        } else {
+          direction = Direction.near;
+        }
+
+        HapticCommand haptic = HapticCommand.stop;
+        for (final h in HapticCommand.values) {
+          if (h.textValue == hapticStr) {
+            haptic = h;
+            break;
+          }
+        }
+
+        return GuidanceOutput(
+          target: target,
+          detected: detected,
+          direction: direction,
+          imagePosition: pos,
+          voiceMessage: voiceMsg,
+          hapticCommand: haptic,
+          proximity: proximity,
+        );
+      }
+    } catch (e) {
+      debugPrint('Claude Vision API call error: $e');
+    }
+    return null;
   }
 
   UserIntent _fallbackParse(String text) {

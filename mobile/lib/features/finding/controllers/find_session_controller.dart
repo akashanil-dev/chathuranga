@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -119,20 +120,51 @@ class FindSessionController extends ChangeNotifier {
     _state = FindSessionState.parsingIntent;
     notifyListeners();
 
-    final intent = await intentClient.parseIntent(transcript);
-
-    if (intent.action == 'STOP') {
+    // Check quick commands first
+    final lower = transcript.toLowerCase();
+    if (lower.contains('stop') || lower.contains('cancel')) {
       await resetToIdle(speakMessage: 'Stopped.');
       return;
     }
-
-    if (intent.action == 'HELP') {
+    if (lower == 'help' || lower == 'help me') {
       await audioService.speak('You can say: Find my keys, where is my water bottle, or stop.');
       _state = FindSessionState.idle;
       notifyListeners();
       return;
     }
 
+    // Initialize camera if needed
+    await _ensureCameraInitialized();
+
+    // Try Claude Multimodal Vision: Camera Snapshot + Voice Command
+    String? snapshotBase64 = await _captureSnapshotBase64();
+    if (snapshotBase64 != null) {
+      final visionGuidance = await intentClient.analyzeSceneWithVision(
+        transcript: transcript,
+        imageBase64: snapshotBase64,
+        sensorDistanceCm: _latestSensorDistance,
+      );
+
+      if (visionGuidance != null && visionGuidance.voiceMessage.isNotEmpty) {
+        _targetObject = visionGuidance.target;
+        _currentGuidance = visionGuidance;
+        _state = visionGuidance.detected ? FindSessionState.guiding : FindSessionState.searching;
+        notifyListeners();
+
+        // Speak Claude's contextual vision guidance aloud!
+        await audioService.speak(visionGuidance.voiceMessage);
+
+        // Send haptic command to ESP32 wristband!
+        await wearableService.sendHaptic(visionGuidance.hapticCommand);
+
+        // Resume continuous local camera stream for live tracking
+        await _startCameraStream();
+        return;
+      }
+    }
+
+    // Fallback: rule-based intent parsing
+    final intent = await intentClient.parseIntent(transcript);
     final target = intent.target?.trim() ?? '';
     if (target.isEmpty) {
       await audioService.speak('I did not catch what you want to find. Please try again.');
@@ -148,6 +180,49 @@ class FindSessionController extends ChangeNotifier {
 
     await audioService.speak('Searching for $_targetObject. Please slowly point the camera around.');
     await _startCameraStream();
+  }
+
+  Future<void> _ensureCameraInitialized() async {
+    if (_cameraController != null && _cameraController!.value.isInitialized) {
+      return;
+    }
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        _objectDetector ??= MockObjectDetector();
+        return;
+      }
+      final backCamera = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.back,
+        orElse: () => cameras.first,
+      );
+      _cameraController = CameraController(
+        backCamera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420,
+      );
+      await _cameraController!.initialize();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Camera init error: $e');
+    }
+  }
+
+  Future<String?> _captureSnapshotBase64() async {
+    try {
+      if (_cameraController != null && _cameraController!.value.isInitialized) {
+        if (_cameraController!.value.isStreamingImages) {
+          await _cameraController!.stopImageStream();
+        }
+        final file = await _cameraController!.takePicture();
+        final bytes = await file.readAsBytes();
+        return base64Encode(bytes);
+      }
+    } catch (e) {
+      debugPrint('Snapshot capture error: $e');
+    }
+    return null;
   }
 
   Future<void> _startCameraStream() async {

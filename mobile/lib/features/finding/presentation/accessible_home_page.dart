@@ -327,21 +327,68 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
                   Text('Direction: ${c.currentGuidance?.imagePosition ?? "none"}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   Text('Haptic: ${c.currentGuidance?.hapticCommand.textValue ?? "STOP"}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   Text('Proximity: ${c.currentGuidance?.proximity ?? "unknown"}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                  Text('Distance Sensor: ${c.latestSensorDistance != null ? "${c.latestSensorDistance} cm" : "N/A"}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   const SizedBox(height: 8),
-                  ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.blueGrey,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    ),
-                    onPressed: () {
-                      c.wearableService.connect();
-                    },
-                    child: const Text('Connect Wristband BLE', style: TextStyle(fontSize: 11)),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueGrey,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        ),
+                        onPressed: () {
+                          c.wearableService.connect();
+                        },
+                        child: const Text('Connect BLE', style: TextStyle(fontSize: 11)),
+                      ),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.indigo,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                        ),
+                        onPressed: () => _showBackendUrlDialog(c),
+                        child: const Text('Edit Server URL', style: TextStyle(fontSize: 11)),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showBackendUrlDialog(FindSessionController c) {
+    final textController = TextEditingController(text: c.intentClient.baseUrl);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: Colors.grey.shade900,
+        title: const Text('Backend Server URL', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: textController,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            hintText: 'http://10.68.37.235:8000',
+            labelText: 'FastAPI Server Address',
+            labelStyle: TextStyle(color: Colors.amber),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              c.intentClient.baseUrl = textController.text.trim();
+              Navigator.pop(ctx);
+              setState(() {});
+            },
+            child: const Text('Save'),
           ),
         ],
       ),

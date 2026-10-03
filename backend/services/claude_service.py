@@ -176,3 +176,86 @@ Do not include markdown fences or any other text."""
             haptic_command=haptic,
             proximity=proximity_str
         )
+
+    async def analyze_multimodal_vision(
+        self,
+        transcript: str,
+        image_base64: str,
+        sensor_distance_cm: Optional[float] = None
+    ) -> GuidanceResponse:
+        """
+        Multimodal scene understanding using Claude 3.5 Vision.
+        Accepts user voice question + phone camera photo and generates
+        contextual spoken guidance and directional haptic commands.
+        """
+        intent = await self.parse_intent(transcript)
+        target = intent.target or "object"
+
+        if self.client:
+            try:
+                clean_b64 = image_base64
+                if "," in clean_b64:
+                    clean_b64 = clean_b64.split(",", 1)[1]
+
+                system_prompt = (
+                    "You are SENSE, an AI assistant for a visually impaired user. "
+                    "The user is holding a phone camera facing their surroundings. "
+                    "Examine the image carefully to find the object requested in the user's speech.\n"
+                    "1. If found, determine its horizontal position: 'left' (left third of image), 'center' (middle third), or 'right' (right third).\n"
+                    "2. Determine haptic command: 'LEFT', 'RIGHT', 'CENTER', 'NEAR', or 'STOP'. If the object appears close or large, use 'NEAR'.\n"
+                    "3. Provide a clear, natural spoken guidance message in under 2 concise sentences (e.g. 'I see your keys to your right, next to the keyboard.').\n"
+                    "4. If the object is not visible, set detected=false, image_position='none', haptic_command='STOP', and advise the user to pan slowly.\n"
+                    "Return ONLY a valid JSON object matching this schema:\n"
+                    "{\n"
+                    '  "target": "<object name>",\n'
+                    '  "detected": <true/false>,\n'
+                    '  "image_position": "<left/center/right/none>",\n'
+                    '  "voice_message": "<spoken guidance>",\n'
+                    '  "haptic_command": "<LEFT/RIGHT/CENTER/NEAR/STOP>",\n'
+                    '  "proximity": "<close/medium/far/unknown>"\n'
+                    "}\n"
+                    "No markdown fences, no other text."
+                )
+
+                response = self.client.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=250,
+                    temperature=0.1,
+                    system=system_prompt,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": clean_b64,
+                                    },
+                                },
+                                {
+                                    "type": "text",
+                                    "text": f"User question: '{transcript}'",
+                                },
+                            ],
+                        }
+                    ],
+                )
+                content = response.content[0].text.strip()
+                if content.startswith("```"):
+                    content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+                data = json.loads(content)
+                return GuidanceResponse(**data)
+            except Exception as e:
+                logger.error(f"Claude Vision API call error: {e}")
+
+        # Fallback guidance when offline or invalid API key
+        return GuidanceResponse(
+            target=target,
+            detected=True,
+            image_position="center",
+            voice_message=f"I am searching for your {target}. Point the camera straight ahead.",
+            haptic_command="CENTER",
+            proximity="unknown"
+        )

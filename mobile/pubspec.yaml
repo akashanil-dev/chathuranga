@@ -40,7 +40,6 @@ dependencies:
   google_mlkit_object_detection: ^0.17.1
   flutter_blue_plus: ^2.3.14
   http: ^1.6.0
-  permission_handler: ^13.0.2
   google_mlkit_commons: ^0.13.0
 
 dev_dependencies:

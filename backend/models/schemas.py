@@ -17,6 +17,11 @@ class BoundingBox(BaseModel):
     x_max: float
     y_max: float
 
+class VisionAnalysisRequest(BaseModel):
+    transcript: str = Field(..., description="User's spoken request, e.g. 'Where are my keys?'")
+    image_base64: str = Field(..., description="Base64 encoded JPEG image captured by the camera")
+    sensor_distance_cm: Optional[float] = None
+
 class GuidanceRequest(BaseModel):
     target: str = Field(..., description="Target object to find")
     bounding_boxes: Optional[List[BoundingBox]] = None
