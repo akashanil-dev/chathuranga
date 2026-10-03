@@ -87,7 +87,27 @@ void main() {
       expect(output.detected, true);
       expect(output.direction, Direction.near);
       expect(output.hapticCommand, HapticCommand.near);
-      expect(output.voiceMessage, contains('close'));
+      expect(output.voiceMessage, contains('Approaching'));
+    });
+
+    test('Proximity sensor <= 8cm produces TOUCHING guidance and continuous haptic', () {
+      final engine = GuidanceEngine();
+      final output = engine.processDetections(
+        target: 'keys',
+        detections: [
+          DetectionResult(
+            label: 'keys',
+            confidence: 0.95,
+            boundingBox: const Rect.fromLTWH(0.4, 0.2, 0.2, 0.2),
+          ),
+        ],
+        sensorDistanceCm: 5.0, // Sensor detects object <= 8cm
+      );
+
+      expect(output.detected, true);
+      expect(output.direction, Direction.touching);
+      expect(output.hapticCommand, HapticCommand.touching);
+      expect(output.voiceMessage, contains('Target reached'));
     });
   });
 
@@ -123,7 +143,7 @@ void main() {
     await tester.pumpWidget(SenseApp(controller: controller));
 
     // Verify initial accessible elements
-    expect(find.text('TAP TO FIND'), findsOneWidget);
+    expect(find.text('TAP TO SEARCH'), findsOneWidget);
     expect(find.text('TAP SCREEN TO START'), findsOneWidget);
     expect(find.byIcon(Icons.mic), findsOneWidget);
   });

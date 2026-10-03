@@ -3,6 +3,7 @@ enum Direction {
   center,
   right,
   near,
+  touching,
   none,
   lost;
 
@@ -15,7 +16,9 @@ enum Direction {
       case Direction.right:
         return 'Right';
       case Direction.near:
-        return 'Near Target';
+        return 'Approaching Target';
+      case Direction.touching:
+        return 'Target Reached';
       case Direction.none:
         return 'Not Detected';
       case Direction.lost:
@@ -29,6 +32,7 @@ enum HapticCommand {
   right('RIGHT', 0x02),
   center('CENTER', 0x03),
   near('NEAR', 0x04),
+  touching('TOUCHING', 0x05),
   stop('STOP', 0x00);
 
   final String textValue;

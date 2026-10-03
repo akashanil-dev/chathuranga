@@ -47,31 +47,63 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
             // Top Bar: System Status & Debug Toggle
             _buildTopBar(c),
 
-            // Giant Accessible Interaction Area (Full screen touch target)
+            // Main Screen: Live Camera Preview (40% opacity) + Accessible HUD
             Expanded(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: c.onUserTap,
-                onDoubleTap: c.onUserDoubleTap,
-                child: Semantics(
-                  label: _getAccessibleSemanticLabel(state, guidance),
-                  button: true,
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: [
-                        _buildStateIcon(state, guidance?.direction),
-                        const SizedBox(height: 32),
-                        _buildPrimaryStatusText(state, guidance),
-                        const SizedBox(height: 16),
-                        _buildSecondaryHelperText(state, c),
-                      ],
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // Layer 1: Live Camera Preview with 40% opacity
+                  _buildCameraBackground(c),
+
+                  // Layer 2: Protective vignette gradient for optimal text contrast
+                  Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.black.withValues(alpha: 0.55),
+                          Colors.black.withValues(alpha: 0.15),
+                          Colors.black.withValues(alpha: 0.65),
+                        ],
+                      ),
                     ),
                   ),
-                ),
+
+                  // Layer 3: Giant Accessible Interaction Surface & Directional UI
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: c.onUserTap,
+                    onDoubleTap: c.onUserDoubleTap,
+                    child: Semantics(
+                      label: _getAccessibleSemanticLabel(state, guidance),
+                      button: true,
+                      child: Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            _buildStateIcon(state, guidance?.direction),
+                            const SizedBox(height: 28),
+                            _buildPrimaryStatusText(state, guidance, c.targetObject),
+                            const SizedBox(height: 14),
+                            _buildSecondaryHelperText(state, c),
+                            if (c.latestSensorDistance != null &&
+                                (state == FindSessionState.guiding ||
+                                    state == FindSessionState.nearTarget ||
+                                    state == FindSessionState.completed))
+                              Padding(
+                                padding: const EdgeInsets.only(top: 16),
+                                child: _buildProximityBadge(c.latestSensorDistance!),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
 
@@ -82,6 +114,78 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
             _buildBottomPrompt(state),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildCameraBackground(FindSessionController c) {
+    final camera = c.cameraController;
+    if (camera != null && camera.value.isInitialized) {
+      return Opacity(
+        opacity: 0.40,
+        child: ClipRect(
+          child: SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.cover,
+              child: SizedBox(
+                width: camera.value.previewSize?.height ?? MediaQuery.of(context).size.width,
+                height: camera.value.previewSize?.width ?? MediaQuery.of(context).size.height,
+                child: CameraPreview(camera),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+    return Container(
+      color: Colors.black,
+      child: const Center(
+        child: Icon(Icons.camera_alt_outlined, color: Colors.white24, size: 64),
+      ),
+    );
+  }
+
+  Widget _buildProximityBadge(double distanceCm) {
+    Color badgeColor = const Color(0xFFFFE600);
+    String label = 'APPROACHING';
+
+    if (distanceCm <= 8.0) {
+      badgeColor = const Color(0xFF00E676);
+      label = 'TOUCHING / REACHED';
+    } else if (distanceCm <= 25.0) {
+      badgeColor = const Color(0xFF00E676);
+      label = 'VERY CLOSE';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.black87,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: badgeColor, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: badgeColor.withValues(alpha: 0.3),
+            blurRadius: 10,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.vibration, color: badgeColor, size: 20),
+          const SizedBox(width: 8),
+          Text(
+            '$label (${distanceCm.toStringAsFixed(1)} cm)',
+            style: TextStyle(
+              color: badgeColor,
+              fontWeight: FontWeight.bold,
+              fontSize: 14,
+              letterSpacing: 1.0,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -144,7 +248,7 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
         color = Colors.lightBlueAccent;
         break;
       case FindSessionState.searching:
-        icon = Icons.center_focus_weak;
+        icon = Icons.radar;
         color = Colors.orangeAccent;
         break;
       case FindSessionState.guiding:
@@ -158,11 +262,11 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
         }
         break;
       case FindSessionState.nearTarget:
-        icon = Icons.check_circle;
+        icon = Icons.near_me;
         color = const Color(0xFF00E676);
         break;
       case FindSessionState.completed:
-        icon = Icons.thumb_up;
+        icon = Icons.check_circle_outline;
         color = const Color(0xFF00E676);
         break;
       case FindSessionState.error:
@@ -175,21 +279,28 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
       width: 140,
       height: 140,
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.15),
+        color: color.withValues(alpha: 0.20),
         shape: BoxShape.circle,
         border: Border.all(color: color, width: 4),
+        boxShadow: [
+          BoxShadow(
+            color: color.withValues(alpha: 0.35),
+            blurRadius: 18,
+            spreadRadius: 4,
+          ),
+        ],
       ),
       child: Icon(icon, size: 70, color: color),
     );
   }
 
-  Widget _buildPrimaryStatusText(FindSessionState state, dynamic guidance) {
+  Widget _buildPrimaryStatusText(FindSessionState state, dynamic guidance, String target) {
     String text;
     Color color = Colors.white;
 
     switch (state) {
       case FindSessionState.idle:
-        text = 'TAP TO FIND';
+        text = 'TAP TO SEARCH';
         color = const Color(0xFFFFE600);
         break;
       case FindSessionState.listening:
@@ -197,15 +308,15 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
         color = const Color(0xFF00E676);
         break;
       case FindSessionState.parsingIntent:
-        text = 'UNDERSTANDING...';
+        text = 'STARTING...';
         color = Colors.lightBlueAccent;
         break;
       case FindSessionState.searching:
-        text = 'SEARCHING...';
+        text = target.isNotEmpty ? 'SCANNING FOR ${target.toUpperCase()}' : 'SCANNING ROOM...';
         color = Colors.orangeAccent;
         break;
       case FindSessionState.guiding:
-        text = guidance != null ? guidance.imagePosition.toUpperCase() : 'GUIDING';
+        text = guidance != null ? guidance.imagePosition.toUpperCase() : 'FOUND TARGET';
         color = const Color(0xFFFFE600);
         break;
       case FindSessionState.nearTarget:
@@ -213,7 +324,7 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
         color = const Color(0xFF00E676);
         break;
       case FindSessionState.completed:
-        text = 'OBJECT LOCATED';
+        text = 'TARGET REACHED';
         color = const Color(0xFF00E676);
         break;
       case FindSessionState.error:
@@ -227,9 +338,12 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
       textAlign: TextAlign.center,
       style: TextStyle(
         color: color,
-        fontSize: 34,
+        fontSize: 32,
         fontWeight: FontWeight.w900,
-        letterSpacing: 2.0,
+        letterSpacing: 1.5,
+        shadows: const [
+          Shadow(color: Colors.black, blurRadius: 8, offset: Offset(0, 2)),
+        ],
       ),
     );
   }
@@ -238,17 +352,19 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
     String subtext;
 
     if (state == FindSessionState.idle) {
-      subtext = 'Tap anywhere on screen\nto say "Find my keys"';
+      subtext = 'Tap screen to speak\ne.g., "Find my keys"';
     } else if (state == FindSessionState.listening) {
       subtext = c.lastVoiceTranscript.isNotEmpty
           ? '"${c.lastVoiceTranscript}"'
-          : 'Speak your object name clearly';
+          : 'Say what you want to find';
     } else if (state == FindSessionState.searching) {
-      subtext = 'Target: "${c.targetObject}"\nSlowly scan your camera';
+      subtext = 'Pan camera around slowly.\nClaude will announce when spotted.';
     } else if (state == FindSessionState.guiding && c.currentGuidance != null) {
       subtext = c.currentGuidance!.voiceMessage;
     } else if (state == FindSessionState.nearTarget) {
-      subtext = 'Wristband vibrating fast.\nReach slowly forward.';
+      subtext = 'Vibrating fast!\nReach slowly forward.';
+    } else if (state == FindSessionState.completed) {
+      subtext = 'Item is right beneath your hand!\nDouble tap to start new search.';
     } else {
       subtext = 'Double tap anytime to cancel';
     }
@@ -259,8 +375,11 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
       style: const TextStyle(
         color: Colors.white,
         fontSize: 20,
-        fontWeight: FontWeight.w500,
+        fontWeight: FontWeight.w600,
         height: 1.4,
+        shadows: [
+          Shadow(color: Colors.black, blurRadius: 8, offset: Offset(0, 2)),
+        ],
       ),
     );
   }

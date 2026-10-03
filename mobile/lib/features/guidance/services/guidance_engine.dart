@@ -54,21 +54,27 @@ class GuidanceEngine {
     String voice;
     HapticCommand haptic;
 
-    // Check proximity first (sensor reading or visual box size)
+    // Check proximity (touching <= 8cm, near <= 25cm, or large visual box)
     String proximity = 'unknown';
     if (sensorDistanceCm != null) {
       proximity = '${sensorDistanceCm.toStringAsFixed(1)} cm';
     }
 
-    final isSensorNear = sensorDistanceCm != null && sensorDistanceCm < 20.0;
+    final isSensorTouching = sensorDistanceCm != null && sensorDistanceCm <= 8.0;
+    final isSensorNear = sensorDistanceCm != null && sensorDistanceCm <= 25.0;
     final isVisualNear = areaRatio >= AppConstants.nearAreaRatioThreshold;
 
-    if (isSensorNear || isVisualNear) {
+    if (isSensorTouching) {
+      direction = Direction.touching;
+      position = 'center';
+      voice = 'Target reached! Right beneath your hand.';
+      haptic = HapticCommand.touching;
+    } else if (isSensorNear || isVisualNear) {
       direction = Direction.near;
       position = cx < AppConstants.leftThreshold
           ? 'left'
           : (cx > AppConstants.rightThreshold ? 'right' : 'center');
-      voice = 'Your $cleanTarget is close. Reach forward slowly.';
+      voice = 'Approaching $cleanTarget. Reach forward slowly.';
       haptic = HapticCommand.near;
       if (proximity == 'unknown' && isVisualNear) {
         proximity = 'close (visual)';

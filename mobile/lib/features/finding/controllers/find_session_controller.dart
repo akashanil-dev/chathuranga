@@ -57,13 +57,39 @@ class FindSessionController extends ChangeNotifier {
     required this.wearableService,
   }) {
     _initWearable();
+    _ensureCameraInitialized();
   }
 
   void _initWearable() {
     wearableService.distanceStream.listen((dist) {
       _latestSensorDistance = dist;
+      _handleProximityUpdate(dist);
       notifyListeners();
     });
+  }
+
+  void _handleProximityUpdate(double? dist) {
+    if (dist == null) return;
+    if (_state != FindSessionState.guiding && _state != FindSessionState.nearTarget) return;
+
+    if (dist <= 8.0) {
+      if (_state != FindSessionState.completed) {
+        _state = FindSessionState.completed;
+        _scanningTimer?.cancel();
+        audioService.speak('Target reached! Right beneath your hand.');
+        HapticFeedback.heavyImpact();
+        wearableService.sendHaptic(HapticCommand.touching);
+        notifyListeners();
+      }
+    } else if (dist <= 25.0) {
+      if (_state != FindSessionState.nearTarget) {
+        _state = FindSessionState.nearTarget;
+        audioService.speak('Approaching $_targetObject. Reach forward slowly.');
+        HapticFeedback.mediumImpact();
+        wearableService.sendHaptic(HapticCommand.near);
+        notifyListeners();
+      }
+    }
   }
 
   void setDetector(ObjectDetector detector) {
@@ -116,6 +142,35 @@ class FindSessionController extends ChangeNotifier {
     }
   }
 
+  String _extractTargetFast(String transcript) {
+    final lower = transcript.toLowerCase().trim();
+    final prefixes = [
+      'can you help me find my ', 'can you help me find the ', 'can you help me find a ', 'can you help me find ',
+      'help me find my ', 'help me find the ', 'help me find a ', 'help me find ',
+      'please find my ', 'please find the ', 'please find a ', 'please find ',
+      'find my ', 'find the ', 'find a ', 'find ',
+      'where are my ', 'where is my ', "where's my ", 'where are the ', 'where is the ',
+      'look for my ', 'look for the ', 'look for ',
+      'locate my ', 'locate the ', 'locate ',
+    ];
+    for (final p in prefixes) {
+      if (lower.startsWith(p)) {
+        String target = lower.substring(p.length).trim();
+        final suffixes = [' please', ' for me', ' thanks', ' thank you'];
+        for (final s in suffixes) {
+          if (target.endsWith(s)) {
+            target = target.substring(0, target.length - s.length).trim();
+          }
+        }
+        return target.replaceAll(RegExp(r'[\.\?\!]+$'), '').trim();
+      }
+    }
+    return '';
+  }
+
+  Timer? _scanningTimer;
+  bool _isScanning = false;
+
   Future<void> processVoiceInput(String transcript) async {
     _state = FindSessionState.parsingIntent;
     notifyListeners();
@@ -133,39 +188,13 @@ class FindSessionController extends ChangeNotifier {
       return;
     }
 
-    // Initialize camera if needed
-    await _ensureCameraInitialized();
-
-    // Try Claude Multimodal Vision: Camera Snapshot + Voice Command
-    String? snapshotBase64 = await _captureSnapshotBase64();
-    if (snapshotBase64 != null) {
-      final visionGuidance = await intentClient.analyzeSceneWithVision(
-        transcript: transcript,
-        imageBase64: snapshotBase64,
-        sensorDistanceCm: _latestSensorDistance,
-      );
-
-      if (visionGuidance != null && visionGuidance.voiceMessage.isNotEmpty) {
-        _targetObject = visionGuidance.target;
-        _currentGuidance = visionGuidance;
-        _state = visionGuidance.detected ? FindSessionState.guiding : FindSessionState.searching;
-        notifyListeners();
-
-        // Speak Claude's contextual vision guidance aloud!
-        await audioService.speak(visionGuidance.voiceMessage);
-
-        // Send haptic command to ESP32 wristband!
-        await wearableService.sendHaptic(visionGuidance.hapticCommand);
-
-        // Resume continuous local camera stream for live tracking
-        await _startCameraStream();
-        return;
-      }
+    // Fast extraction or fallback to backend intent parsing
+    String target = _extractTargetFast(transcript);
+    if (target.isEmpty) {
+      final intent = await intentClient.parseIntent(transcript);
+      target = intent.target?.trim() ?? '';
     }
 
-    // Fallback: rule-based intent parsing
-    final intent = await intentClient.parseIntent(transcript);
-    final target = intent.target?.trim() ?? '';
     if (target.isEmpty) {
       await audioService.speak('I did not catch what you want to find. Please try again.');
       _state = FindSessionState.idle;
@@ -173,13 +202,71 @@ class FindSessionController extends ChangeNotifier {
       return;
     }
 
+    // Initialize camera if needed
+    await _ensureCameraInitialized();
+
     _targetObject = target;
     _state = FindSessionState.searching;
     guidanceEngine.reset();
+    _currentGuidance = null;
     notifyListeners();
 
-    await audioService.speak('Searching for $_targetObject. Please slowly point the camera around.');
-    await _startCameraStream();
+    // Immediate confirmation feedback
+    HapticFeedback.mediumImpact();
+    await audioService.speak('Searching for $_targetObject. Move your camera around slowly.');
+
+    // Start continuous Claude Haiku scanning loop as the user pans around
+    _startScanningLoop(transcript);
+  }
+
+  void _startScanningLoop(String originalTranscript) {
+    _scanningTimer?.cancel();
+    _runSingleScan(originalTranscript);
+
+    _scanningTimer = Timer.periodic(const Duration(milliseconds: 1800), (timer) async {
+      if (_state != FindSessionState.searching) {
+        timer.cancel();
+        return;
+      }
+      await _runSingleScan(originalTranscript);
+    });
+  }
+
+  Future<void> _runSingleScan(String originalTranscript) async {
+    if (_isScanning || _state != FindSessionState.searching) return;
+    _isScanning = true;
+
+    try {
+      final snapshotBase64 = await _captureSnapshotBase64();
+      if (snapshotBase64 != null && _state == FindSessionState.searching) {
+        final visionGuidance = await intentClient.analyzeSceneWithVision(
+          transcript: originalTranscript,
+          imageBase64: snapshotBase64,
+          sensorDistanceCm: _latestSensorDistance,
+        );
+
+        if (visionGuidance != null && visionGuidance.detected && _state == FindSessionState.searching) {
+          _scanningTimer?.cancel();
+          _state = FindSessionState.guiding;
+          _targetObject = visionGuidance.target;
+          _currentGuidance = visionGuidance;
+          _lastDetectionTime = DateTime.now();
+          notifyListeners();
+
+          // Spoken guidance announcement
+          HapticFeedback.heavyImpact();
+          await audioService.speak('Found your $_targetObject! ${visionGuidance.voiceMessage}');
+          await wearableService.sendHaptic(visionGuidance.hapticCommand);
+
+          // Start continuous local camera tracking
+          await _startCameraStream();
+        }
+      }
+    } catch (e) {
+      debugPrint('Scanning loop error: $e');
+    } finally {
+      _isScanning = false;
+    }
   }
 
   Future<void> _ensureCameraInitialized() async {
@@ -358,6 +445,7 @@ class FindSessionController extends ChangeNotifier {
   }
 
   Future<void> resetToIdle({String? speakMessage}) async {
+    _scanningTimer?.cancel();
     _state = FindSessionState.idle;
     _targetObject = '';
     _currentGuidance = null;
@@ -380,6 +468,7 @@ class FindSessionController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _scanningTimer?.cancel();
     _cameraController?.dispose();
     _objectDetector?.dispose();
     super.dispose();
