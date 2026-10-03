@@ -77,23 +77,30 @@ class MlKitObjectDetector implements ObjectDetector {
 
   InputImage? _buildInputImage(CameraImage image, int rotationDegrees) {
     try {
-      final format = InputImageFormatValue.fromRawValue(image.format.raw);
-      if (format == null) return null;
+      final format = InputImageFormatValue.fromRawValue(image.format.raw) ??
+          InputImageFormat.nv21;
 
-      final plane = image.planes.first;
       final rotation = InputImageRotationValue.fromRawValue(rotationDegrees) ??
           InputImageRotation.rotation0deg;
 
+      // Concatenate all planes (Y + U + V) into a single buffer
+      final allBytes = WriteBuffer();
+      for (final plane in image.planes) {
+        allBytes.putUint8List(plane.bytes);
+      }
+      final bytes = allBytes.done().buffer.asUint8List();
+
       return InputImage.fromBytes(
-        bytes: plane.bytes,
+        bytes: bytes,
         metadata: InputImageMetadata(
           size: Size(image.width.toDouble(), image.height.toDouble()),
           rotation: rotation,
           format: format,
-          bytesPerRow: plane.bytesPerRow,
+          bytesPerRow: image.planes.first.bytesPerRow,
         ),
       );
-    } catch (_) {
+    } catch (e) {
+      debugPrint('_buildInputImage error: $e');
       return null;
     }
   }
