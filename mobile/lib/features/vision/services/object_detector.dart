@@ -13,6 +13,7 @@ abstract class ObjectDetector {
 class MlKitObjectDetector implements ObjectDetector {
   late final mlkit.ObjectDetector _detector;
   bool _isDisposed = false;
+  int _consecutiveErrors = 0;
 
   MlKitObjectDetector() {
     final options = mlkit.ObjectDetectorOptions(
@@ -35,6 +36,7 @@ class MlKitObjectDetector implements ObjectDetector {
       if (inputImage == null) return [];
 
       final objects = await _detector.processImage(inputImage);
+      _consecutiveErrors = 0;
       final results = <DetectionResult>[];
 
       final imageWidth = image.width.toDouble();
@@ -70,25 +72,40 @@ class MlKitObjectDetector implements ObjectDetector {
 
       return results;
     } catch (e) {
-      debugPrint('ML Kit detection error: $e');
+      _consecutiveErrors++;
+      if (_consecutiveErrors <= 3) {
+        debugPrint('ML Kit detection error: $e');
+      }
       return [];
     }
   }
 
   InputImage? _buildInputImage(CameraImage image, int rotationDegrees) {
     try {
-      final format = InputImageFormatValue.fromRawValue(image.format.raw) ??
-          InputImageFormat.nv21;
-
       final rotation = InputImageRotationValue.fromRawValue(rotationDegrees) ??
           InputImageRotation.rotation0deg;
 
-      // Concatenate all planes (Y + U + V) into a single buffer
-      final allBytes = WriteBuffer();
-      for (final plane in image.planes) {
-        allBytes.putUint8List(plane.bytes);
+      Uint8List bytes;
+      InputImageFormat format;
+      int bytesPerRow;
+
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        format = InputImageFormat.nv21;
+        if (image.planes.length == 1) {
+          // CameraX with ImageFormatGroup.nv21 outputs a single NV21 plane
+          bytes = image.planes.first.bytes;
+          bytesPerRow = image.planes.first.bytesPerRow;
+        } else {
+          // Fallback: convert 3 YUV_420_888 planes to NV21
+          bytes = _yuv420ToNv21(image);
+          bytesPerRow = image.width;
+        }
+      } else {
+        format = InputImageFormatValue.fromRawValue(image.format.raw) ??
+            InputImageFormat.bgra8888;
+        bytes = image.planes.first.bytes;
+        bytesPerRow = image.planes.first.bytesPerRow;
       }
-      final bytes = allBytes.done().buffer.asUint8List();
 
       return InputImage.fromBytes(
         bytes: bytes,
@@ -96,13 +113,70 @@ class MlKitObjectDetector implements ObjectDetector {
           size: Size(image.width.toDouble(), image.height.toDouble()),
           rotation: rotation,
           format: format,
-          bytesPerRow: image.planes.first.bytesPerRow,
+          bytesPerRow: bytesPerRow,
         ),
       );
     } catch (e) {
       debugPrint('_buildInputImage error: $e');
       return null;
     }
+  }
+
+  static Uint8List _yuv420ToNv21(CameraImage image) {
+    final width = image.width;
+    final height = image.height;
+    final numPixels = (width * height * 1.5).toInt();
+    final nv21 = Uint8List(numPixels);
+
+    try {
+      final yPlane = image.planes[0];
+      final uPlane = image.planes[1];
+      final vPlane = image.planes[2];
+
+      final yBuffer = yPlane.bytes;
+      final uBuffer = uPlane.bytes;
+      final vBuffer = vPlane.bytes;
+
+      final yRowStride = yPlane.bytesPerRow;
+      int pos = 0;
+      if (yRowStride == width) {
+        final len = yBuffer.length < width * height ? yBuffer.length : width * height;
+        nv21.setRange(0, len, yBuffer);
+        pos = width * height;
+      } else {
+        for (int row = 0; row < height; row++) {
+          final srcStart = row * yRowStride;
+          if (srcStart + width <= yBuffer.length) {
+            nv21.setRange(pos, pos + width, yBuffer, srcStart);
+          }
+          pos += width;
+        }
+      }
+
+      final uvWidth = width ~/ 2;
+      final uvHeight = height ~/ 2;
+      final uRowStride = uPlane.bytesPerRow;
+      final vRowStride = vPlane.bytesPerRow;
+      final uPixelStride = uPlane.bytesPerPixel ?? 1;
+      final vPixelStride = vPlane.bytesPerPixel ?? 1;
+
+      for (int row = 0; row < uvHeight; row++) {
+        final uRowStart = row * uRowStride;
+        final vRowStart = row * vRowStride;
+        for (int col = 0; col < uvWidth; col++) {
+          final vIdx = vRowStart + col * vPixelStride;
+          final uIdx = uRowStart + col * uPixelStride;
+          if (pos < numPixels && vIdx < vBuffer.length && uIdx < uBuffer.length) {
+            nv21[pos++] = vBuffer[vIdx];
+            nv21[pos++] = uBuffer[uIdx];
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error converting YUV420 to NV21: $e');
+    }
+
+    return nv21;
   }
 
   @override

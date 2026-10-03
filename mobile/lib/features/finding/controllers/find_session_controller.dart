@@ -200,7 +200,7 @@ class FindSessionController extends ChangeNotifier {
         backCamera,
         ResolutionPreset.medium,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.yuv420,
+        imageFormatGroup: ImageFormatGroup.nv21,
       );
       await _cameraController!.initialize();
       notifyListeners();
@@ -225,6 +225,8 @@ class FindSessionController extends ChangeNotifier {
     return null;
   }
 
+  int _lastFrameTimestamp = 0;
+
   Future<void> _startCameraStream() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
       try {
@@ -245,7 +247,7 @@ class FindSessionController extends ChangeNotifier {
           backCamera,
           ResolutionPreset.medium,
           enableAudio: false,
-          imageFormatGroup: ImageFormatGroup.yuv420,
+          imageFormatGroup: ImageFormatGroup.nv21,
         );
 
         await _cameraController!.initialize();
@@ -261,9 +263,15 @@ class FindSessionController extends ChangeNotifier {
     _objectDetector ??= MlKitObjectDetector();
 
     try {
+      if (_cameraController!.value.isStreamingImages) {
+        return;
+      }
       await _cameraController!.startImageStream((CameraImage image) {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (now - _lastFrameTimestamp < 220) return; // Throttle to ~4.5 FPS
         if (_isProcessingFrame) return;
         _isProcessingFrame = true;
+        _lastFrameTimestamp = now;
         _processCameraFrame(image);
       });
     } catch (e) {
