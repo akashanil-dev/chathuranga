@@ -50,13 +50,14 @@ Return ONLY a valid JSON object with the following schema:
 Do not include markdown fences or any other text."""
                 
                 response = self.client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=100,
-                    temperature=0.0,
+                    model="claude-opus-5-5",
+                    max_tokens=300,
                     messages=[{"role": "user", "content": prompt}]
                 )
-                content = response.content[0].text.strip()
-                # Parse JSON
+                text_block = next((b for b in response.content if getattr(b, "type", None) == "text"), None)
+                content = text_block.text.strip() if text_block else "{}"
+                if content.startswith("```"):
+                    content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
                 data = json.loads(content)
                 return VoiceIntentResponse(
                     action=data.get("action", "FIND_OBJECT"),
@@ -194,9 +195,15 @@ Do not include markdown fences or any other text."""
         if self.client:
             try:
                 clean_b64 = image_base64
-                if "," in clean_b64:
-                    clean_b64 = clean_b64.split(",", 1)[1]
-
+                media_type = "image/jpeg"
+                if clean_b64.startswith("data:"):
+                    header, clean_b64 = clean_b64.split(",", 1)
+                    if "image/png" in header:
+                        media_type = "image/png"
+                    elif "image/webp" in header:
+                        media_type = "image/webp"
+                elif clean_b64.startswith("iVBOR"):
+                    media_type = "image/png"
                 system_prompt = (
                     "You are SENSE, an AI assistant for a visually impaired user. "
                     "The user is holding a phone camera facing their surroundings. "
@@ -218,9 +225,8 @@ Do not include markdown fences or any other text."""
                 )
 
                 response = self.client.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=250,
-                    temperature=0.1,
+                    model="claude-opus-5-5",
+                    max_tokens=400,
                     system=system_prompt,
                     messages=[
                         {
@@ -230,7 +236,7 @@ Do not include markdown fences or any other text."""
                                     "type": "image",
                                     "source": {
                                         "type": "base64",
-                                        "media_type": "image/jpeg",
+                                        "media_type": media_type,
                                         "data": clean_b64,
                                     },
                                 },
@@ -242,7 +248,8 @@ Do not include markdown fences or any other text."""
                         }
                     ],
                 )
-                content = response.content[0].text.strip()
+                text_block = next((b for b in response.content if getattr(b, "type", None) == "text"), None)
+                content = text_block.text.strip() if text_block else "{}"
                 if content.startswith("```"):
                     content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
                 data = json.loads(content)
