@@ -5,6 +5,10 @@ import '../../../core/constants/app_constants.dart';
 import '../../../core/types/direction.dart';
 import '../../guidance/models/guidance_output.dart';
 
+final RegExp _stopWords = RegExp(r'\b(stop|cancel|quit)\b');
+
+bool isStopCommand(String text) => _stopWords.hasMatch(text.toLowerCase());
+
 class UserIntent {
   final String action; // FIND_OBJECT, STOP, HELP, UNKNOWN
   final String? target;
@@ -44,7 +48,7 @@ class IntentClient {
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({'transcript': clean}),
           )
-          .timeout(const Duration(seconds: 4));
+          .timeout(const Duration(seconds: 8));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -63,7 +67,7 @@ class IntentClient {
     required String imageBase64,
     double? sensorDistanceCm,
   }) async {
-    final hosts = [baseUrl, if (baseUrl != AppConstants.wifiBackendUrl) AppConstants.wifiBackendUrl];
+    final hosts = [baseUrl, if (baseUrl != AppConstants.localBackendUrl) AppConstants.localBackendUrl];
     for (final host in hosts) {
       try {
         final url = Uri.parse('$host/api/v1/analyze');
@@ -77,48 +81,15 @@ class IntentClient {
                 'sensor_distance_cm': sensorDistanceCm,
               }),
             )
-            .timeout(const Duration(seconds: 8));
+            // Backend tries local Qwen (<=6 s) then Claude (<=8 s) before answering.
+            .timeout(const Duration(seconds: 15));
 
         if (response.statusCode == 200) {
-          final data = jsonDecode(response.body) as Map<String, dynamic>;
-          final target = data['target'] as String? ?? 'object';
-          final detected = data['detected'] as bool? ?? false;
-          final pos = data['image_position'] as String? ?? 'none';
-          final voiceMsg = data['voice_message'] as String? ?? '';
-          final hapticStr = data['haptic_command'] as String? ?? 'STOP';
-          final proximity = data['proximity'] as String? ?? 'unknown';
-
-          Direction direction;
-          if (pos == 'left') {
-            direction = Direction.left;
-          } else if (pos == 'right') {
-            direction = Direction.right;
-          } else if (pos == 'center') {
-            direction = Direction.center;
-          } else if (!detected) {
-            direction = Direction.none;
-          } else {
-            direction = Direction.near;
-          }
-
-          HapticCommand haptic = HapticCommand.stop;
-          for (final h in HapticCommand.values) {
-            if (h.textValue == hapticStr) {
-              haptic = h;
-              break;
-            }
-          }
-
-          return GuidanceOutput(
-            target: target,
-            detected: detected,
-            direction: direction,
-            imagePosition: pos,
-            voiceMessage: voiceMsg,
-            hapticCommand: haptic,
-            proximity: proximity,
-          );
+          final guidance = guidanceFromJson(jsonDecode(response.body) as Map<String, dynamic>);
+          debugPrint('Vision via ${guidance.provider}: $guidance');
+          return guidance;
         }
+        debugPrint('Vision API HTTP ${response.statusCode} on $host: ${response.body}');
       } catch (e) {
         debugPrint('Vision API call error on $host: $e');
       }
@@ -126,10 +97,43 @@ class IntentClient {
     return null;
   }
 
+  static GuidanceOutput guidanceFromJson(Map<String, dynamic> data) {
+    final detected = data['detected'] as bool? ?? false;
+    final pos = data['image_position'] as String? ?? 'none';
+    final hapticStr = data['haptic_command'] as String? ?? 'STOP';
+    final haptic = HapticCommand.values.firstWhere((h) => h.textValue == hapticStr, orElse: () => HapticCommand.stop);
+
+    final Direction direction;
+    if (!detected) {
+      direction = Direction.none;
+    } else if (haptic == HapticCommand.touching) {
+      direction = Direction.touching;
+    } else if (haptic == HapticCommand.near) {
+      direction = Direction.near;
+    } else {
+      direction = switch (pos) {
+        'left' => Direction.left,
+        'right' => Direction.right,
+        _ => Direction.center,
+      };
+    }
+
+    return GuidanceOutput(
+      target: data['target'] as String? ?? 'object',
+      detected: detected,
+      direction: direction,
+      imagePosition: pos,
+      voiceMessage: data['voice_message'] as String? ?? '',
+      hapticCommand: haptic,
+      proximity: data['proximity'] as String? ?? 'unknown',
+      provider: data['provider'] as String?,
+    );
+  }
+
   UserIntent _fallbackParse(String text) {
     final lower = text.toLowerCase();
 
-    if (lower.contains('stop') || lower.contains('cancel') || lower.contains('quit')) {
+    if (isStopCommand(lower)) {
       return UserIntent(action: 'STOP', target: null, rawTranscript: text);
     }
 

@@ -9,6 +9,7 @@ class GuidanceOutput {
   final HapticCommand hapticCommand;
   final String proximity;
   final double? confidence;
+  final String? provider; // "local", "claude", "rules", "none" (backend), null for on-device
 
   GuidanceOutput({
     required this.target,
@@ -19,6 +20,7 @@ class GuidanceOutput {
     required this.hapticCommand,
     required this.proximity,
     this.confidence,
+    this.provider,
   });
 
   Map<String, dynamic> toJson() => {

@@ -32,7 +32,7 @@ void main() async {
 
   final speechService = SpeechService();
   final intentClient = IntentClient();
-  final wearableService = BleWearableService();
+  final wearableService = BleWearableService()..startAutoConnect();
 
   final controller = FindSessionController(
     speechService: speechService,

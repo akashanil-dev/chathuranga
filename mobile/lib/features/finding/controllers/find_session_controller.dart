@@ -41,6 +41,7 @@ class FindSessionController extends ChangeNotifier {
   GuidanceOutput? _currentGuidance;
   double? _latestSensorDistance;
   bool _isProcessingFrame = false;
+  bool _disposed = false;
   DateTime _lastDetectionTime = DateTime.now();
 
   FindSessionState get state => _state;
@@ -170,6 +171,7 @@ class FindSessionController extends ChangeNotifier {
 
   Timer? _scanningTimer;
   bool _isScanning = false;
+  int _scanFailures = 0;
 
   Future<void> processVoiceInput(String transcript) async {
     _state = FindSessionState.parsingIntent;
@@ -177,7 +179,7 @@ class FindSessionController extends ChangeNotifier {
 
     // Check quick commands first
     final lower = transcript.toLowerCase();
-    if (lower.contains('stop') || lower.contains('cancel')) {
+    if (isStopCommand(lower)) {
       await resetToIdle(speakMessage: 'Stopped.');
       return;
     }
@@ -221,6 +223,7 @@ class FindSessionController extends ChangeNotifier {
 
   void _startScanningLoop(String originalTranscript) {
     _scanningTimer?.cancel();
+    _scanFailures = 0;
     _runSingleScan(originalTranscript);
 
     _scanningTimer = Timer.periodic(const Duration(milliseconds: 1800), (timer) async {
@@ -244,6 +247,15 @@ class FindSessionController extends ChangeNotifier {
           imageBase64: snapshotBase64,
           sensorDistanceCm: _latestSensorDistance,
         );
+
+        if (visionGuidance == null) {
+          _scanFailures++;
+          if (_scanFailures == 3) {
+            audioService.speak('I cannot reach the server. Please check the connection.');
+          }
+        } else {
+          _scanFailures = 0;
+        }
 
         if (visionGuidance != null && visionGuidance.detected && _state == FindSessionState.searching) {
           _scanningTimer?.cancel();
@@ -354,6 +366,7 @@ class FindSessionController extends ChangeNotifier {
         return;
       }
       await _cameraController!.startImageStream((CameraImage image) {
+        if (_disposed) return;
         final now = DateTime.now().millisecondsSinceEpoch;
         if (now - _lastFrameTimestamp < 220) return; // Throttle to ~4.5 FPS
         if (_isProcessingFrame) return;
@@ -468,8 +481,20 @@ class FindSessionController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _scanningTimer?.cancel();
-    _cameraController?.dispose();
+    // Stop the image stream before disposing to prevent the
+    // "FlutterJNI is not attached to native" crash — the
+    // ImageReader can fire after the engine detaches otherwise.
+    final cc = _cameraController;
+    if (cc != null) {
+      try {
+        if (cc.value.isStreamingImages) {
+          cc.stopImageStream();
+        }
+      } catch (_) {}
+      cc.dispose();
+    }
     _objectDetector?.dispose();
     super.dispose();
   }

@@ -9,8 +9,9 @@ class AppConstants {
   static const Duration hapticCooldown = Duration(milliseconds: 600);
 
   // Backend URL: Uses 127.0.0.1 via adb reverse for zero-latency, firewall-free connection
-  static const String defaultBackendUrl = 'http://127.0.0.1:8000';
-  static const String wifiBackendUrl = 'http://10.68.37.235:8000';
+  // Override at build time: flutter run --dart-define=BACKEND_URL=http://<pc-ip>:8000
+  static const String localBackendUrl = 'http://127.0.0.1:8000';
+  static const String defaultBackendUrl = String.fromEnvironment('BACKEND_URL', defaultValue: localBackendUrl);
 
   // BLE UUIDs matching firmware/esp32_wristband.ino
   static const String bleDeviceName = 'SENSE-Wristband';

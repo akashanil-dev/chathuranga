@@ -3,293 +3,136 @@ import json
 import logging
 from typing import Optional
 from dotenv import load_dotenv
-from models.schemas import VoiceIntentResponse, GuidanceResponse, GuidanceRequest
+from models.schemas import GuidanceResponse, GuidanceRequest
+from services.guidance import extract_target_fast, guidance_from_box, not_detected, parse_box
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+class ProviderUnavailable(Exception):
+    """Raised when an AI provider cannot answer, so the router can fall back."""
+
+
+def _strip_fences(content: str) -> str:
+    content = content.strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return content
+
+
+def split_data_url(image_base64: str) -> tuple[str, str]:
+    """Return (media_type, raw_base64) for a plain or data: URL base64 image."""
+    media_type = "image/jpeg"
+    data = image_base64
+    if data.startswith("data:"):
+        header, data = data.split(",", 1)
+        if "image/png" in header:
+            media_type = "image/png"
+        elif "image/webp" in header:
+            media_type = "image/webp"
+    elif data.startswith("iVBOR"):
+        media_type = "image/png"
+    return media_type, data
+
 
 class ClaudeService:
+    """Anthropic Claude provider. Used as the fallback when the local VLM fails."""
+
     def __init__(self):
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
         self.model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+        self.timeout_s = float(os.getenv("CLAUDE_TIMEOUT_S", "8"))
         self.client = None
+        if self.api_key and self.api_key.startswith("your_"):
+            logger.warning("ANTHROPIC_API_KEY is still the placeholder; running without Claude.")
+            self.api_key = None
         if self.api_key:
             try:
+                import ssl
                 import anthropic
-                self.client = anthropic.Anthropic(api_key=self.api_key)
+                # An explicit stdlib SSL context avoids the SDK's truststore default, which hits
+                # infinite recursion in ssl.verify_mode on Python 3.10 ("Connection error.").
+                self.client = anthropic.AsyncAnthropic(
+                    api_key=self.api_key,
+                    timeout=self.timeout_s,
+                    max_retries=0,
+                    http_client=anthropic.DefaultAsyncHttpxClient(verify=ssl.create_default_context()),
+                )
                 logger.info(f"Initialized Anthropic client with model: {self.model}")
             except Exception as e:
                 logger.warning(f"Failed to initialize Anthropic client: {e}")
 
-    @staticmethod
-    def extract_target_fast(transcript: str) -> Optional[str]:
-        clean_text = transcript.strip().lower()
-        prefixes = [
-            "can you help me find my ", "can you help me find the ", "can you help me find a ", "can you help me find ",
-            "help me find my ", "help me find the ", "help me find a ", "help me find ",
-            "please find my ", "please find the ", "please find a ", "please find ",
-            "find my ", "find the ", "find a ", "find ",
-            "where are my ", "where is my ", "where's my ", "where did i leave my ", "where are the ", "where is the ",
-            "look for my ", "look for the ", "look for ",
-            "locate my ", "locate the ", "locate "
-        ]
-        for p in prefixes:
-            if clean_text.startswith(p):
-                target = clean_text[len(p):].rstrip(".?! ").strip()
-                suffixes = [" please", " for me", " thanks", " thank you"]
-                for s in suffixes:
-                    if target.endswith(s):
-                        target = target[:-len(s)].rstrip(".?! ").strip()
-                if target:
-                    return target
-        return None
+    @property
+    def available(self) -> bool:
+        return self.client is not None
 
-    async def parse_intent(self, transcript: str) -> VoiceIntentResponse:
-        """Parses user speech into structured intent using fast rules or Claude Haiku."""
-        clean_text = transcript.strip().lower()
-        if not clean_text:
-            return VoiceIntentResponse(action="UNKNOWN", target=None, raw_transcript=transcript)
-
-        # Check for stop / cancel (0ms)
-        if any(w in clean_text for w in ["stop", "cancel", "quit", "abort", "nevermind"]):
-            return VoiceIntentResponse(action="STOP", target=None, raw_transcript=transcript)
-
-        # Check for help (0ms)
-        if any(w in clean_text for w in ["what can you do", "instructions", "how do i use", "how does this work"]) or (clean_text in ["help", "help me"]):
-            return VoiceIntentResponse(action="HELP", target=None, raw_transcript=transcript)
-
-        # Fast heuristic extraction (0ms latency for common phrases like "find my keys")
-        fast_target = self.extract_target_fast(transcript)
-        if fast_target:
-            return VoiceIntentResponse(
-                action="FIND_OBJECT",
-                target=fast_target,
-                raw_transcript=transcript
+    async def _ask(self, content, max_tokens: int, system: Optional[str] = None) -> dict:
+        if not self.client:
+            raise ProviderUnavailable("Claude is not configured (no ANTHROPIC_API_KEY)")
+        kwargs = {"system": system} if system else {}
+        try:
+            response = await self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": content}],
+                **kwargs,
             )
+            text_block = next((b for b in response.content if getattr(b, "type", None) == "text"), None)
+            return json.loads(_strip_fences(text_block.text if text_block else "{}"))
+        except Exception as e:
+            raise ProviderUnavailable(f"Claude call failed: {e}") from e
 
-        # Try fast Claude Haiku if available for complex or ambiguous sentences
-        if self.client:
-            try:
-                prompt = f"""You are SENSE, an AI intent extractor for a visually impaired user's assistive device.
-Extract the target object the user wants to locate from the following transcript:
-Transcript: "{transcript}"
-
-Return ONLY a valid JSON object with the following schema:
-{{
-  "action": "FIND_OBJECT",
-  "target": "<normalized single-word or short noun phrase for the object, e.g., 'keys', 'water bottle', 'phone'>"
-}}
-Do not include markdown fences or any other text."""
-                
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=100,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                text_block = next((b for b in response.content if getattr(b, "type", None) == "text"), None)
-                content = text_block.text.strip() if text_block and hasattr(text_block, "text") else "{}"
-                if content.startswith("```"):
-                    content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-                data = json.loads(content)
-                return VoiceIntentResponse(
-                    action=data.get("action", "FIND_OBJECT"),
-                    target=data.get("target"),
-                    raw_transcript=transcript
-                )
-            except Exception as e:
-                logger.error(f"Claude API call failed: {e}. Falling back to default target.")
-
-        return VoiceIntentResponse(
-            action="FIND_OBJECT",
-            target=clean_text.rstrip(".?! "),
-            raw_transcript=transcript
+    async def extract_target(self, transcript: str) -> Optional[str]:
+        """LLM target extraction for sentences the fast rules could not parse."""
+        prompt = (
+            "You are SENSE, an intent extractor for a visually impaired user's assistive device.\n"
+            f'Transcript: "{transcript}"\n'
+            'Return ONLY JSON: {"target": "<short noun phrase for the object to find, e.g. keys, water bottle, phone>"}'
         )
+        data = await self._ask(prompt, max_tokens=60)
+        target = (data.get("target") or "").strip()
+        return target or None
 
     def calculate_guidance(self, req: GuidanceRequest) -> GuidanceResponse:
-        """
-        Generates structured guidance matching:
-        {
-          "target": "keys",
-          "detected": true,
-          "image_position": "right",
-          "voice_message": "The keys appear to your right.",
-          "haptic_command": "RIGHT",
-          "proximity": "unknown"
-        }
-        """
+        """Deterministic guidance from on-device detector boxes (no LLM)."""
         target = req.target.lower().strip()
-        matched_box = None
-
-        if req.bounding_boxes:
-            for box in req.bounding_boxes:
-                label = box.label.lower()
-                if target in label or label in target:
-                    matched_box = box
-                    break
-            if not matched_box:
-                # Take highest confidence box if nothing matched exactly
-                matched_box = max(req.bounding_boxes, key=lambda b: b.confidence, default=None)
-
-        if not matched_box:
-            return GuidanceResponse(
-                target=target,
-                detected=False,
-                image_position="none",
-                voice_message=f"I don't see the {target} yet. Please scan slowly.",
-                haptic_command="STOP",
-                proximity="unknown"
-            )
-
-        # Center X in normalized coordinate [0.0, 1.0]
-        center_x = (matched_box.x_min + matched_box.x_max) / 2.0
-        width = matched_box.x_max - matched_box.x_min
-        height = matched_box.y_max - matched_box.y_min
-        area_ratio = width * height
-
-        # Proximity estimation
-        proximity_str = "unknown"
-        if req.sensor_distance_cm is not None:
-            proximity_str = f"{req.sensor_distance_cm:.1f} cm"
-            if req.sensor_distance_cm < 20.0:
-                return GuidanceResponse(
-                    target=target,
-                    detected=True,
-                    image_position="center" if 0.35 <= center_x <= 0.65 else ("left" if center_x < 0.35 else "right"),
-                    voice_message=f"The {target} is very close to your hand.",
-                    haptic_command="NEAR",
-                    proximity=proximity_str
-                )
-        elif area_ratio > 0.35:
-            proximity_str = "close (visual)"
-            return GuidanceResponse(
-                target=target,
-                detected=True,
-                image_position="center" if 0.35 <= center_x <= 0.65 else ("left" if center_x < 0.35 else "right"),
-                voice_message=f"Your {target} is right in front of you.",
-                haptic_command="NEAR",
-                proximity=proximity_str
-            )
-
-        # Direction calculation
-        if center_x < 0.35:
-            pos = "left"
-            voice = f"The {target} appears to your left."
-            haptic = "LEFT"
-        elif center_x > 0.65:
-            pos = "right"
-            voice = f"The {target} appears to your right."
-            haptic = "RIGHT"
-        else:
-            pos = "center"
-            voice = f"Straight ahead. The {target} is in front of you."
-            haptic = "CENTER"
-
-        return GuidanceResponse(
-            target=target,
-            detected=True,
-            image_position=pos,
-            voice_message=voice,
-            haptic_command=haptic,
-            proximity=proximity_str
+        boxes = req.bounding_boxes or []
+        matched = next((b for b in boxes if target in b.label.lower() or b.label.lower() in target), None)
+        if not matched and boxes:
+            matched = max(boxes, key=lambda b: b.confidence)
+        if not matched:
+            return not_detected(target, "rules", f"I don't see the {target} yet. Please scan slowly.")
+        return guidance_from_box(
+            target, matched.x_min, matched.y_min, matched.x_max, matched.y_max, req.sensor_distance_cm, "rules"
         )
 
     async def analyze_multimodal_vision(
         self,
         transcript: str,
         image_base64: str,
-        sensor_distance_cm: Optional[float] = None
+        sensor_distance_cm: Optional[float] = None,
+        target: Optional[str] = None,
     ) -> GuidanceResponse:
-        """
-        Multimodal scene understanding using fast Claude Vision (Haiku).
-        Accepts user voice question + phone camera photo and generates
-        contextual spoken guidance and directional haptic commands in ~1.5 seconds.
-        """
-        target = self.extract_target_fast(transcript) or "object"
-
-        if self.client:
-            try:
-                clean_b64 = image_base64
-                media_type = "image/jpeg"
-                if clean_b64.startswith("data:"):
-                    header, clean_b64 = clean_b64.split(",", 1)
-                    if "image/png" in header:
-                        media_type = "image/png"
-                    elif "image/webp" in header:
-                        media_type = "image/webp"
-                elif clean_b64.startswith("iVBOR"):
-                    media_type = "image/png"
-                system_prompt = (
-                    "You are SENSE, an AI assistant for a visually impaired user holding a phone camera. "
-                    "Examine the image carefully to find the object requested in the user's speech.\n"
-                    "1. If found, determine its horizontal position: 'left' (left third of image), 'center' (middle third), or 'right' (right third).\n"
-                    "2. Determine haptic command: 'LEFT', 'RIGHT', 'CENTER', 'NEAR', or 'STOP'. If the object appears close or large, use 'NEAR'.\n"
-                    "3. Provide a clear, natural spoken guidance message in under 2 concise sentences (e.g. 'I see your keys to your right, next to the keyboard.').\n"
-                    "4. If the object is not visible, set detected=false, image_position='none', haptic_command='STOP', and advise the user to pan slowly.\n"
-                    "Return ONLY a valid JSON object matching this schema:\n"
-                    "{\n"
-                    '  "target": "<object name>",\n'
-                    '  "detected": <true/false>,\n'
-                    '  "image_position": "<left/center/right/none>",\n'
-                    '  "voice_message": "<spoken guidance>",\n'
-                    '  "haptic_command": "<LEFT/RIGHT/CENTER/NEAR/STOP>",\n'
-                    '  "proximity": "<close/medium/far/unknown>"\n'
-                    "}\n"
-                    "No markdown fences, no other text."
-                )
-
-                response = self.client.messages.create(
-                    model=self.model,
-                    max_tokens=250,
-                    system=system_prompt,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": clean_b64,
-                                    },
-                                },
-                                {
-                                    "type": "text",
-                                    "text": f"User question: '{transcript}'",
-                                },
-                            ],
-                        }
-                    ],
-                )
-                text_block = next((b for b in response.content if getattr(b, "type", None) == "text"), None)
-                content = text_block.text.strip() if text_block and hasattr(text_block, "text") else "{}"
-                if content.startswith("```"):
-                    content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-                data = json.loads(content)
-                if "detected" in data and isinstance(data["detected"], str):
-                    data["detected"] = data["detected"].lower() == "true"
-                if not data.get("image_position"):
-                    data["image_position"] = "none" if not data.get("detected") else "center"
-                if not data.get("target"):
-                    data["target"] = target
-                if not data.get("voice_message"):
-                    data["voice_message"] = f"Looking for your {target}."
-                if not data.get("haptic_command"):
-                    data["haptic_command"] = "STOP" if not data.get("detected") else "CENTER"
-                if not data.get("proximity"):
-                    data["proximity"] = "unknown"
-                return GuidanceResponse(**data)
-            except Exception as e:
-                logger.error(f"Claude Vision API call error: {e}")
-
-        # Fallback guidance when offline or invalid API key
-        return GuidanceResponse(
-            target=target,
-            detected=False,
-            image_position="none",
-            voice_message=f"I don't see the {target} yet. Please point your camera around slowly.",
-            haptic_command="STOP",
-            proximity="unknown"
+        """Ground the target with Claude Vision. Raises ProviderUnavailable on failure."""
+        target = target or extract_target_fast(transcript) or "object"
+        media_type, data = split_data_url(image_base64)
+        system = (
+            "You are SENSE, helping a visually impaired user find an object with a phone camera. "
+            "Look for the requested object. Return ONLY JSON: "
+            '{"seen_object": "<what is at that spot>", "is_target": <true/false>, '
+            '"bbox_2d": [x1, y1, x2, y2]} with coordinates 0-1000 relative to the image. '
+            "If the object is not visible, set is_target=false and bbox_2d=[0,0,0,0]. No other text."
         )
+        result = await self._ask(
+            [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}},
+                {"type": "text", "text": f"Find the {target}. User said: '{transcript}'"},
+            ],
+            max_tokens=150,
+            system=system,
+        )
+        box = parse_box(result)
+        if box is None:
+            return not_detected(target, "claude")
+        return guidance_from_box(target, *box, sensor_distance_cm, "claude")

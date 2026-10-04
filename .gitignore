@@ -1,18 +1,78 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
 # Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
 backend/venv/
 backend/.env
-__pycache__/
-*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
-# Flutter & Dart
+# Flutter and Dart
 mobile/.dart_tool/
 mobile/.flutter-plugins
 mobile/.flutter-plugins-dependencies
-mobile/build/
 mobile/.packages
 mobile/.pub-cache/
 mobile/.pub/
+mobile/build/
+mobile/android/.gradle/
+mobile/android/local.properties
+mobile/android/key.properties
+mobile/android/app/debug/
+mobile/android/app/profile/
+mobile/android/app/release/
+mobile/ios/Flutter/ephemeral/
+mobile/ios/Flutter/Generated.xcconfig
+mobile/ios/Flutter/flutter_export_environment.sh
 
-# System
+# Arduino and embedded tooling
+.arduinoIDE/
+.vscode/
+*.ino.cpp
+
+# IDEs and operating systems
+.idea/
+*.iml
 .DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and temporary files
 *.log
+*.tmp
+*.temp
+nul

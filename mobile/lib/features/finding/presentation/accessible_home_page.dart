@@ -12,19 +12,33 @@ class AccessibleHomePage extends StatefulWidget {
   State<AccessibleHomePage> createState() => _AccessibleHomePageState();
 }
 
-class _AccessibleHomePageState extends State<AccessibleHomePage> {
+class _AccessibleHomePageState extends State<AccessibleHomePage>
+    with WidgetsBindingObserver {
   bool _showDebugHud = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.controller.addListener(_onControllerUpdate);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.controller.removeListener(_onControllerUpdate);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // When the app is paused or detached, reset the session so the camera
+    // stream is stopped *before* the engine detaches — avoids the
+    // "FlutterJNI is not attached to native" crash.
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      widget.controller.resetToIdle();
+    }
   }
 
   void _onControllerUpdate() {
@@ -446,6 +460,7 @@ class _AccessibleHomePageState extends State<AccessibleHomePage> {
                   Text('Direction: ${c.currentGuidance?.imagePosition ?? "none"}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   Text('Haptic: ${c.currentGuidance?.hapticCommand.textValue ?? "STOP"}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   Text('Proximity: ${c.currentGuidance?.proximity ?? "unknown"}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                  Text('AI: ${c.currentGuidance?.provider ?? "on-device"}  |  Sensor: ${c.latestSensorDistance?.toStringAsFixed(0) ?? "-"} cm', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 6,

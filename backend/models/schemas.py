@@ -1,6 +1,9 @@
 from typing import Optional, List, Literal
 from pydantic import BaseModel, Field
 
+HapticCommand = Literal["LEFT", "RIGHT", "CENTER", "NEAR", "TOUCHING", "STOP"]
+
+
 class VoiceIntentRequest(BaseModel):
     transcript: str = Field(..., description="Transcribed user speech, e.g., 'Find my keys'")
 
@@ -33,5 +36,6 @@ class GuidanceResponse(BaseModel):
     detected: bool
     image_position: Literal["left", "center", "right", "none", "unknown"]
     voice_message: str
-    haptic_command: Literal["LEFT", "RIGHT", "CENTER", "NEAR", "STOP"]
+    haptic_command: HapticCommand
     proximity: str = "unknown"
+    provider: Optional[str] = Field(None, description="Which engine produced this answer: local, claude, rules, none")

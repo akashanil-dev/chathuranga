@@ -26,6 +26,21 @@ class BleWearableService implements WearableService {
   String _statusMessage = 'Disconnected';
   StreamSubscription? _scanSub;
   StreamSubscription? _connectionSub;
+  StreamSubscription? _telemetrySub;
+  Timer? _autoConnectTimer;
+  bool _connecting = false;
+
+  /// Keep trying to reach the wristband in the background (user never has to press a button).
+  void startAutoConnect({Duration interval = const Duration(seconds: 12)}) {
+    _autoConnectTimer?.cancel();
+    void attempt() {
+      if (_isConnected || _connecting || FlutterBluePlus.isScanningNow) return;
+      connect();
+    }
+
+    attempt();
+    _autoConnectTimer = Timer.periodic(interval, (_) => attempt());
+  }
 
   @override
   Stream<double?> get distanceStream => _distanceController.stream;
@@ -73,6 +88,8 @@ class BleWearableService implements WearableService {
   }
 
   Future<void> _connectToDevice(BluetoothDevice device) async {
+    if (_connecting) return;
+    _connecting = true;
     try {
       _updateStatus('Connecting to ${device.platformName}...');
       await device.connect(
@@ -104,7 +121,8 @@ class BleWearableService implements WearableService {
             } else if (c.uuid == Guid.fromString(AppConstants.telemetryCharUuid)) {
               _telemetryChar = c;
               await _telemetryChar!.setNotifyValue(true);
-              _telemetryChar!.lastValueStream.listen(_onTelemetryReceived);
+              await _telemetrySub?.cancel();
+              _telemetrySub = _telemetryChar!.lastValueStream.listen(_onTelemetryReceived);
             }
           }
         }
@@ -115,6 +133,8 @@ class BleWearableService implements WearableService {
       _connectionController.add(true);
     } catch (e) {
       _updateStatus('Connection failed: $e');
+    } finally {
+      _connecting = false;
     }
   }
 
@@ -143,6 +163,8 @@ class BleWearableService implements WearableService {
 
   @override
   Future<void> disconnect() async {
+    _autoConnectTimer?.cancel();
+    await _telemetrySub?.cancel();
     await _scanSub?.cancel();
     await _connectionSub?.cancel();
     await _connectedDevice?.disconnect();

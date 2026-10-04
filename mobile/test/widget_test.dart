@@ -130,6 +130,51 @@ void main() {
       final intent = await client.parseIntent('Stop');
       expect(intent.action, 'STOP');
     });
+
+    test('Does not treat "stopwatch" as a STOP command', () async {
+      expect(isStopCommand('where is my stopwatch'), false);
+      expect(isStopCommand('please stop'), true);
+      final intent = await client.parseIntent('Where is my stopwatch');
+      expect(intent.action, 'FIND_OBJECT');
+      expect(intent.target, 'stopwatch');
+    });
+  });
+
+  group('Backend /analyze response parsing', () {
+    Map<String, dynamic> resp(String pos, String haptic, {bool detected = true, String? provider = 'local'}) => {
+          'target': 'keys',
+          'detected': detected,
+          'image_position': pos,
+          'voice_message': 'msg',
+          'haptic_command': haptic,
+          'proximity': 'unknown',
+          'provider': provider,
+        };
+
+    test('Directional answers map to direction and haptic', () {
+      final g = IntentClient.guidanceFromJson(resp('right', 'RIGHT'));
+      expect(g.direction, Direction.right);
+      expect(g.hapticCommand, HapticCommand.right);
+      expect(g.provider, 'local');
+    });
+
+    test('TOUCHING and NEAR override position', () {
+      expect(IntentClient.guidanceFromJson(resp('center', 'TOUCHING')).direction, Direction.touching);
+      expect(IntentClient.guidanceFromJson(resp('left', 'NEAR')).direction, Direction.near);
+      expect(IntentClient.guidanceFromJson(resp('center', 'TOUCHING')).hapticCommand, HapticCommand.touching);
+    });
+
+    test('Not detected maps to none/STOP and keeps provider', () {
+      final g = IntentClient.guidanceFromJson(resp('none', 'STOP', detected: false, provider: 'claude'));
+      expect(g.detected, false);
+      expect(g.direction, Direction.none);
+      expect(g.hapticCommand, HapticCommand.stop);
+      expect(g.provider, 'claude');
+    });
+
+    test('Unknown haptic falls back to STOP', () {
+      expect(IntentClient.guidanceFromJson(resp('left', 'WIGGLE')).hapticCommand, HapticCommand.stop);
+    });
   });
 
   testWidgets('SenseApp UI smoke test', (WidgetTester tester) async {
